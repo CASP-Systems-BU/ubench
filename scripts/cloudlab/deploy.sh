@@ -1,17 +1,19 @@
 #!/bin/bash
 #
-# Deploy a ubench workload's services onto the CloudLab k8s cluster.
+# Deploy (or tear down) a ubench workload's services on the CloudLab k8s cluster.
 #
 # Run this from the SAME machine you run bootstrap.sh from (your laptop / dev
 # box). It copies k8s/<benchmark>/ up to the control node (node-0), applies the
 # service manifests there, waits for the deployments to roll out, and does a
 # heartbeat sweep across the services so you know the deploy is actually live.
+# With --down it deletes that workload's services instead.
 #
 # The cluster must already be up (./bootstrap.sh).
 #
 #   Usage:
 #     ./deploy.sh                 # deploy boutique (default)
 #     ./deploy.sh movie           # deploy a different workload (movie/social/hotel/...)
+#     ./deploy.sh boutique --down # tear down a workload's services
 #
 #   Env overrides:
 #     CONTROL_HOST=apt190.apt.emulab.net   # control node (default: 1st entry in nodes.sh)
@@ -21,7 +23,17 @@
 # CloudLab key in the ssh-agent.
 set -euo pipefail
 
-BENCH="${1:-boutique}"
+# Args: an optional workload name (default boutique) and an optional --down
+# flag, in any order: `./deploy.sh`, `./deploy.sh movie`, `./deploy.sh movie --down`.
+BENCH="boutique"
+DOWN=0
+for arg in "$@"; do
+	case "$arg" in
+		--down) DOWN=1 ;;
+		-*)     echo "[!] Unknown option: $arg (supported: --down)" >&2; exit 1 ;;
+		*)      BENCH="$arg" ;;
+	esac
+done
 SSH_USER="${SSH_USER:-yuhang}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,16 +56,34 @@ if [[ ! -d "${LOCAL_DIR}/yamls" ]]; then
 	exit 1
 fi
 
-echo "[*] Deploying '${BENCH}' to control node ${SSH_USER}@${MAIN}"
-
-# 1. Copy the workload's k8s dir up to the control node (~ expands remotely).
+# Copy the workload's manifests up to the control node (~ expands remotely).
+# Both deploy and teardown operate on this remote directory so kubectl parses
+# each file independently — robust regardless of trailing newlines, unlike
+# hand-concatenating the files into one stream.
 echo "[*] Copying ${LOCAL_DIR} -> ${MAIN}:~/ubench/k8s/"
 ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" "mkdir -p ~/ubench/k8s"
 scp "${SSH_OPTS[@]}" -r "${LOCAL_DIR}" "${SSH_USER}@${MAIN}:~/ubench/k8s/"
 
-# 2. Apply + wait + verify, all on the control node. Heredoc is quoted ('EOF')
-#    so it is sent verbatim; the benchmark name is passed as $1 to the remote
-#    bash, and everything else is evaluated on the control node.
+REMOTE_YAMLS="~/ubench/k8s/${BENCH}/yamls"
+
+# --- teardown -------------------------------------------------------------
+# NOTE: workloads share generic service names (every one has a "frontend"), so
+# only tear down the workload that is actually deployed — running `<other>
+# --down` can delete objects that belong to the workload currently running.
+if [[ "${DOWN}" -eq 1 ]]; then
+	echo "[*] Tearing down '${BENCH}' on ${SSH_USER}@${MAIN}"
+	ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" "kubectl delete --ignore-not-found -f ${REMOTE_YAMLS}/"
+	echo
+	echo "=== remaining workload resources (default namespace) ==="
+	ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" "kubectl get deploy,svc"
+	echo
+	echo "[*] '${BENCH}' torn down on ${MAIN}."
+	exit 0
+fi
+
+# Apply + wait + verify, all on the control node. Heredoc is quoted ('EOF') so
+# it is sent verbatim; the benchmark name is passed as $1 to the remote bash,
+# and everything else is evaluated on the control node.
 echo "[*] Applying manifests + verifying on ${MAIN}"
 ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" "bash -s" "${BENCH}" <<'EOF'
 set -e
