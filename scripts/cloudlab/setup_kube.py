@@ -16,9 +16,12 @@ class KubeSetUp:
     def init_kubernetes_on_main(self):
         print("[*] Initializing Kubernetes on main node...")
         config = self.shell_helper.config
+        main_node = config["nodes"][0]
         init_script_path = "./init_kube.sh"
         self.shell_helper.copy_files_to_nodes(init_script_path, mode=2)
-        result = self.shell_helper.execute_script(config["nodes"][0], config["nodes_user"], self.shell_helper.get_home_path(init_script_path))
+        # advertise the API server on the main node's internal LAN IP so the
+        # generated join command targets 10.0.0.x, not the public CloudLab IP
+        result = self.shell_helper.execute_script(main_node, config["nodes_user"], self.shell_helper.get_home_path(init_script_path), args=[main_node])
         match = re.search(r"(kubeadm join\s[\s\S]+?)(?:\n\n|\Z)", str(result))
         join_command = ""
         if match:

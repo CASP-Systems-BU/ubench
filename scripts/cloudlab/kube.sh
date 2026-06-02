@@ -31,7 +31,17 @@ net.bridge.bridge-nf-call-ip6tables = 1
 EOF
 sudo sysctl --system
 
-echo 'KUBELET_EXTRA_ARGS="--cgroup-driver=cgroupfs"' | sudo tee /etc/default/kubelet > /dev/null
+# Pin kubelet to this node's experiment-LAN IP (10.0.0.x). Without this,
+# kubelet derives its node IP from the default route, which on CloudLab is the
+# *public* iface (eno1) -> the API server then reaches kubelets over public IPs
+# and ufw (which only allows 10.0.0.0/24) drops exec/logs/top. Auto-detected so
+# the same script works unchanged on every node.
+NODE_IP=$(ip -4 -o addr show | awk '/ 10\.0\.0\./{print $4}' | cut -d/ -f1 | head -n1)
+if [ -z "${NODE_IP}" ]; then
+	echo "[!] No 10.0.0.x experiment-LAN address found on this node" >&2
+	exit 1
+fi
+echo "KUBELET_EXTRA_ARGS=\"--cgroup-driver=cgroupfs --node-ip=${NODE_IP}\"" | sudo tee /etc/default/kubelet > /dev/null
 sudo systemctl daemon-reload && sudo systemctl restart kubelet
 sudo tee /etc/docker/daemon.json <<EOF
 {
@@ -46,4 +56,4 @@ sudo tee /etc/docker/daemon.json <<EOF
 EOF
 sudo systemctl daemon-reload && sudo systemctl restart docker
 
-git clone https://github.com/aliceziyun/meshtrek.git ~/meshtrek
+# git clone https://github.com/aliceziyun/meshtrek.git ~/meshtrek
