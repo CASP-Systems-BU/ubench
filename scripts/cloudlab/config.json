@@ -1,11 +1,12 @@
 {
-    "nodes_user": "yizhengx",
+    "nodes_user": "yuhang",
     "nodes_number": 5,
     "nodes": [
-        "ms0621.utah.cloudlab.us",
-        "ms0639.utah.cloudlab.us",
-        "ms0618.utah.cloudlab.us",
-        "ms0614.utah.cloudlab.us"
+        "10.0.0.101",
+        "10.0.0.102",
+        "10.0.0.103",
+        "10.0.0.104",
+        "10.0.0.105"
     ],
-    "nodes_home": "/users/yizhengx"
+    "nodes_home": "/users/yuhang"
 }

@@ -26,5 +26,3 @@ spec:
         #     cpu: $CLIENT_CPU_QUOTA
         #     memory: 4Gi
         imagePullPolicy: Always
-      imagePullSecrets:
-        - name: regcred
