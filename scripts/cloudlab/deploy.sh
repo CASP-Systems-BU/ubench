@@ -14,27 +14,40 @@
 #     ./deploy.sh                 # deploy boutique (default)
 #     ./deploy.sh movie           # deploy a different workload (movie/social/hotel/...)
 #     ./deploy.sh boutique --down # tear down a workload's services
+#     ./deploy.sh boutique --run  # deploy, then drive the wrk workload against it
 #
 #   Env overrides:
 #     CONTROL_HOST=apt190.apt.emulab.net   # control node (default: 1st entry in nodes.sh)
 #     SSH_USER=yuhang                      # ssh user (default: yuhang)
+#     REQUEST=mix THREADS=4 CONNS=16 DURATION=30   # --run wrk parameters
 #
 # Prereqs (same as bootstrap.sh): `ssh <user>@<control-host>` works with your
 # CloudLab key in the ssh-agent.
 set -euo pipefail
 
-# Args: an optional workload name (default boutique) and an optional --down
-# flag, in any order: `./deploy.sh`, `./deploy.sh movie`, `./deploy.sh movie --down`.
+# Args: an optional workload name (default boutique) and an optional --down or
+# --run flag, in any order: `./deploy.sh`, `./deploy.sh movie --down`, etc.
 BENCH="boutique"
 DOWN=0
+RUN=0
 for arg in "$@"; do
 	case "$arg" in
 		--down) DOWN=1 ;;
-		-*)     echo "[!] Unknown option: $arg (supported: --down)" >&2; exit 1 ;;
+		--run)  RUN=1 ;;
+		-*)     echo "[!] Unknown option: $arg (supported: --down, --run)" >&2; exit 1 ;;
 		*)      BENCH="$arg" ;;
 	esac
 done
+if [[ "${DOWN}" -eq 1 && "${RUN}" -eq 1 ]]; then
+	echo "[!] --down and --run are mutually exclusive" >&2; exit 1
+fi
 SSH_USER="${SSH_USER:-yuhang}"
+
+# wrk parameters used by --run (override via env). Mirror k8s/boutique/run.sh.
+REQUEST="${REQUEST:-mix}"
+THREADS="${THREADS:-4}"
+CONNS="${CONNS:-16}"
+DURATION="${DURATION:-30}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -119,3 +132,24 @@ EOF
 
 echo
 echo "[*] '${BENCH}' deployed and verified on ${MAIN}."
+
+# --- run the wrk workload (optional) --------------------------------------
+# scripts/run.sh drives the benchmark: it deploys the load-generator client pod
+# (public image yizhengx/mucache:client) and execs `wrk` against the services.
+# It expects to live at ~/ubench/scripts/run.sh with ~/ubench/client/ alongside
+# the k8s manifests, so copy those up before invoking it on the control node.
+# (`kubectl top` inside run.sh needs metrics-server, which isn't installed — it
+# prints an error there but is non-fatal and does not affect the wrk result.)
+if [[ "${RUN}" -eq 1 ]]; then
+	echo
+	echo "[*] Copying run.sh + client/ to ${MAIN}"
+	ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" "mkdir -p ~/ubench/scripts"
+	scp "${SSH_OPTS[@]}" "${REPO_ROOT}/scripts/run.sh" "${SSH_USER}@${MAIN}:~/ubench/scripts/"
+	scp "${SSH_OPTS[@]}" -r "${REPO_ROOT}/client" "${SSH_USER}@${MAIN}:~/ubench/"
+
+	echo "[*] Running wrk: ${BENCH} request=${REQUEST} threads=${THREADS} conns=${CONNS} duration=${DURATION}s"
+	ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" \
+		"bash ~/ubench/scripts/run.sh ${BENCH} ${REQUEST} ${THREADS} ${CONNS} ${DURATION}"
+	echo
+	echo "[*] wrk workload finished on ${MAIN}."
+fi
