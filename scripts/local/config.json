@@ -1,0 +1,12 @@
+{
+    "nodes_user": "vm",
+    "nodes": [
+        "10.0.0.48",
+        "10.0.0.221",
+        "10.0.0.160",
+        "10.0.0.235",
+        "10.0.0.154"
+    ],
+    "nodes_home": "/home/vm",
+    "enable_istio_metrics": true
+}
