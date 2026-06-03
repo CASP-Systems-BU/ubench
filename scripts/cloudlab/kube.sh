@@ -16,8 +16,18 @@ sudo apt update -yq
 sudo apt install kubeadm kubelet kubectl -yq
 sudo apt-mark hold kubeadm kubelet kubectl
 
+# Disable swap (kubelet refuses to start with swap on). On CloudLab the swap
+# isn't an fstab entry — it's a GPT "Linux swap" partition (/dev/sdaNN) that
+# systemd's gpt-auto-generator re-activates on *every boot*. So swapoff + an
+# fstab edit doesn't survive the reboots CloudLab does between/within
+# experiments, and kubelet then crash-loops ("running with swap on is not
+# supported") leaving the node NotReady. Mask the generated .swap unit(s) so
+# swap stays off permanently. The fstab edit is kept for images that do use it.
 sudo swapoff -a
 sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+for u in $(systemctl list-units --type swap --all --no-legend --plain | awk '{print $1}'); do
+	sudo systemctl mask "$u" || true
+done
 
 sudo tee /etc/modules-load.d/containerd.conf <<EOF
 overlay
