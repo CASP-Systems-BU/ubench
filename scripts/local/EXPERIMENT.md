@@ -235,6 +235,61 @@ Useful PromQL one-liners:
 > or widen the window. Cumulative counters (`istio_requests_total`,
 > `..._sum`/`..._count`) persist and can be read any time.
 
+### 5d. Full catalog — everything Istio can collect
+
+(From the official docs: [Standard Metrics](https://istio.io/latest/docs/reference/config/metrics/),
+[Observability](https://istio.io/latest/docs/concepts/observability/).)
+
+**Standard service-level metrics — HTTP/HTTP2/gRPC** (this experiment uses the
+first two):
+
+| Metric | Type | Measures |
+|--------|------|----------|
+| `istio_requests_total` | Counter | every request handled by a proxy (volume, error rate) |
+| `istio_request_duration_milliseconds` | Histogram | request latency distribution (p50/p99/...) |
+| `istio_request_bytes` | Histogram | HTTP request body sizes |
+| `istio_response_bytes` | Histogram | HTTP response body sizes |
+| `istio_request_messages_total` | Counter | gRPC messages sent by clients |
+| `istio_response_messages_total` | Counter | gRPC messages sent by servers |
+
+**Standard service-level metrics — TCP** (non-HTTP traffic, e.g. databases):
+
+| Metric | Type | Measures |
+|--------|------|----------|
+| `istio_tcp_sent_bytes_total` / `istio_tcp_received_bytes_total` | Counter | bytes sent/received on TCP connections |
+| `istio_tcp_connections_opened_total` / `istio_tcp_connections_closed_total` | Counter | TCP connections opened/closed |
+
+**Labels (dimensions) on all of the above** — every metric can be sliced by:
+`reporter` (source/destination side), `source_workload`/`source_workload_namespace`,
+`destination_workload`/`destination_service_name`/`destination_service_namespace`,
+app/version (canonical service), `request_protocol`, `response_code`,
+`grpc_response_status`, `response_flags` (failure cause: timeouts, circuit
+breaking, no healthy upstream — great for failure attribution),
+`connection_security_policy` (whether mTLS was used), and source/destination
+principals/cluster. The call graph in 5c is just `istio_requests_total` sliced by
+`source_workload` → `destination_service_name`.
+
+**Proxy-level (raw Envoy) stats** — each sidecar internally tracks much more:
+connection-pool usage, circuit-breaker/retry counters, listener/cluster traffic,
+TLS handshakes, etc. Only a small subset is exported by default (overhead);
+enable more selectively when debugging (e.g. "is the connection pool saturated?").
+
+**Control-plane metrics** — istiod self-monitoring: xDS push counts/latency,
+sidecar injection counts, certificate issuance. For monitoring the mesh itself.
+
+**Beyond metrics — two more telemetry types (not enabled in this experiment):**
+
+- **Distributed traces**: sidecars generate a span per request hop, with no app
+  changes — shows where a *single* request spends its time across
+  frontend→checkout→payment. Backends: Jaeger / Zipkin / OpenTelemetry;
+  sampling rate is configurable. This is the natural next step to decompose
+  checkout's p99 into per-hop latency (metrics only give per-service averages).
+- **Access logs**: one configurable log line per request, for per-request audit.
+
+**Customization (Telemetry API)**: add custom dimensions to the standard metrics
+(e.g. split `frontend` metrics by URL path), or drop unneeded dimensions to save
+storage.
+
 ---
 
 ## 6. Re-run / change the workload
