@@ -38,8 +38,11 @@ check_connectivity() {
         kubectl exec $pod_name -- curl $service_name:80/heartbeat --max-time 1 | grep Heartbeat > /dev/null
         return $?
     fi
-    kubectl exec $pod_name -- sh -c "(echo -e \"GET /heartbeat HTTP/1.1\r\nHost: $service_name\r\nConnection: close\r\n\r\n\") \
-        | nc -w 1 $service_name 80" | grep Heartbeat > /dev/null
+    # Proper HTTP client (not a raw `echo | nc` request): behaves identically
+    # without Istio, and also works when the pods carry an Envoy sidecar, which
+    # rejects the half-formed nc request. -t 1: single attempt, -T 1: same
+    # timeout as the old nc -w 1.
+    kubectl exec $pod_name -- wget -qO- -T 1 -t 1 http://$service_name:80/heartbeat 2>/dev/null | grep Heartbeat > /dev/null
     return $?
 }
 
@@ -145,7 +148,10 @@ echo "[run.sh] Waiting for all pods to be running"
 while [[ $(kubectl get pods | grep -v -E 'Running|Completed|STATUS' | wc -l) -ne 0 ]]; do
   sleep 1
 done
-while [[ $(kubectl get pods | grep -v -E '1/1|STATUS' | wc -l) -ne 0 ]]; do
+# Ready when the READY column is N/N for every pod. Comparing the two counts
+# (instead of matching the literal '1/1') keeps this working when Istio sidecar
+# injection makes the benchmark pods 2/2.
+while [[ $(kubectl get pods --no-headers | awk '{split($2,a,"/"); if (a[1]!=a[2]) print}' | wc -l) -ne 0 ]]; do
   sleep 1
 done
 echo "[run.sh] All pods are running"

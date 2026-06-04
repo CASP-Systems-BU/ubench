@@ -120,7 +120,11 @@ rc=0
 for svc in $(kubectl get svc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -vx kubernetes); do
 	ok=0
 	for _ in 1 2 3; do
-		if kubectl exec "$POD" -- sh -c '(echo -e "GET /heartbeat HTTP/1.1\r\nHost: '"$svc"'\r\nConnection: close\r\n\r\n") | nc -w 3 '"$svc"' 80' 2>/dev/null | grep -qi heartbeat; then
+		# Proper HTTP client (not a raw `echo | nc` request): behaves identically
+		# without Istio, and also works when the pods carry an Envoy sidecar,
+		# which rejects the half-formed nc request. -t 1: single attempt (GNU
+		# wget retries by default), -T 3: same timeout as the old nc -w 3.
+		if kubectl exec "$POD" -- wget -qO- -T 3 -t 1 "http://${svc}:80/heartbeat" 2>/dev/null | grep -qi heartbeat; then
 			ok=1; break
 		fi
 		sleep 2

@@ -2,6 +2,11 @@ import re
 import os
 from shell_helper import ShellHelper
 
+# Self-hosted (non-CloudLab) cluster orchestrator. Same structure as the
+# cloudlab variant but without the CloudLab-specific networking: flat single-NIC
+# LAN, so no kubelet/flannel interface pinning. Optionally enables Istio
+# service-level metric collection (config "enable_istio_metrics").
+
 class KubeSetUp:
     def __init__(self, config_path):
         self.shell_helper = ShellHelper(config_path)
@@ -19,8 +24,7 @@ class KubeSetUp:
         main_node = config["nodes"][0]
         init_script_path = "./init_kube.sh"
         self.shell_helper.copy_files_to_nodes(init_script_path, mode=2)
-        # advertise the API server on the main node's internal LAN IP so the
-        # generated join command targets 10.0.0.x, not the public CloudLab IP
+        # advertise the API server on the control node's IP
         result = self.shell_helper.execute_script(main_node, config["nodes_user"], self.shell_helper.get_home_path(init_script_path), args=[main_node])
         match = re.search(r"(kubeadm join\s[\s\S]+?)(?:\n\n|\Z)", str(result))
         join_command = ""
@@ -36,7 +40,6 @@ class KubeSetUp:
         print("[*] Joining worker nodes to the Kubernetes cluster...")
         join_kube_path = "./join_kube.sh"
         after_join_path = "./after_join.sh"
-        # write join command to file
         with open(join_kube_path, "w") as f:
             f.write(f"sudo {join_command}")
 
@@ -49,8 +52,6 @@ class KubeSetUp:
         # Install Istio control plane + Prometheus addon and turn on sidecar
         # auto-injection so the benchmark microservices export
         # istio_requests_total / istio_request_duration_milliseconds etc.
-        # Runs on the main node only (it owns the kubeconfig from after_join.sh).
-        # Gated by "enable_istio_metrics" in config.json (default off).
         print("[*] Enabling Istio metric collection on main node...")
         config = self.shell_helper.config
         istio_script_path = "./enable_istio_metrics.sh"
