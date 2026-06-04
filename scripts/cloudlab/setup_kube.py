@@ -45,10 +45,28 @@ class KubeSetUp:
         self.shell_helper.copy_files_to_nodes(after_join_path, mode=2)
         self.shell_helper.execute_parallel(self.shell_helper.get_home_path(after_join_path), mode=2)
 
+    def enable_istio_metrics_on_main(self):
+        # Install Istio control plane + Prometheus addon and turn on sidecar
+        # auto-injection so the benchmark microservices export
+        # istio_requests_total / istio_request_duration_milliseconds etc.
+        # Runs on the main node only (it owns the kubeconfig from after_join.sh).
+        # Gated by "enable_istio_metrics" in config.json (default off).
+        print("[*] Enabling Istio metric collection on main node...")
+        config = self.shell_helper.config
+        istio_script_path = "./enable_istio_metrics.sh"
+        self.shell_helper.copy_files_to_nodes(istio_script_path, mode=2)
+        self.shell_helper.execute_script(
+            config["nodes"][0],
+            config["nodes_user"],
+            self.shell_helper.get_home_path(istio_script_path),
+        )
+
     def kube_cluster_setup(self):
         self.environment_setup()
         join_command = self.init_kubernetes_on_main()
         self.join_workers_to_cluster(join_command)
+        if self.shell_helper.config.get("enable_istio_metrics", False):
+            self.enable_istio_metrics_on_main()
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))

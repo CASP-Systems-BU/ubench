@@ -8,5 +8,6 @@
         "10.0.0.104",
         "10.0.0.105"
     ],
-    "nodes_home": "/users/yuhang"
+    "nodes_home": "/users/yuhang",
+    "enable_istio_metrics": true
 }
