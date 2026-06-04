@@ -104,6 +104,25 @@ ssh vm@10.0.0.48 kubectl get pods -n istio-system   # istiod + prometheus Runnin
 ssh vm@10.0.0.48 'kubectl get ns default --show-labels'   # istio-injection=enabled
 ```
 
+### Retrofitting an EXISTING cluster (Istio was not enabled at setup time)
+
+The `enable_istio_metrics` switch only takes effect during `setup_kube.py` — it
+does not change a cluster that is already running. To add Istio to an existing
+cluster, run the enable script once **on the control node**, then recreate the
+pods so they pick up the sidecar:
+
+```bash
+# local cluster:
+bash ~/enable_istio_metrics.sh            # wherever setup copied it; or scp it over
+# CloudLab cluster (bootstrap.sh copies the scripts to ~/ubench/scripts/cloudlab/):
+bash ~/ubench/scripts/cloudlab/enable_istio_metrics.sh
+
+kubectl rollout restart deployment        # existing pods come back 2/2 (with sidecar)
+kubectl get pods                          # verify 2/2 Running
+```
+
+The script is idempotent — safe to run on a cluster that already has Istio.
+
 ---
 
 ## 3. Deploy the boutique services
