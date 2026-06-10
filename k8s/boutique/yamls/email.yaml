@@ -33,7 +33,7 @@ spec:
     spec:
       containers:
         - name: "email"
-          image: yizhengx/ubench:boutique
+          image: pentium3/ubench:boutique
           env:
             - name: APP_PORT
               value: "3000"
