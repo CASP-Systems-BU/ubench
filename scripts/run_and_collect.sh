@@ -34,7 +34,7 @@ duration="${5:-30}"
 RESULTS_ROOT="${RESULTS_ROOT:-$HOME/ubench/results}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d-%H%M%S)}"
 DIR="${RESULTS_ROOT}/${bench}-${request}_${RUN_ID}"
-mkdir -p "${DIR}/istio/access_logs"
+mkdir -p "${DIR}/istio/access_logs" "${DIR}/cilium"
 
 START_EPOCH="$(date -u +%s)"
 START_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -53,6 +53,30 @@ START_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "${DIR}/resources.csv" &
 SAMPLER=$!
 
+# Cilium/Hubble flow capture (only if Cilium is the CNI). Hubble's relay keeps
+# just a small in-memory ring buffer, so a high-traffic run would overflow it —
+# we must STREAM flows live for the whole run rather than query after the fact.
+# `cilium hubble port-forward` exposes the relay on :4245; `hubble observe -f`
+# then tails every flow as JSON lines (the network-level analog to the Envoy
+# access logs). Both are backgrounded and torn down with the run; best-effort.
+HUBBLE_PF_PID=""
+HUBBLE_OBS_PID=""
+if kubectl -n kube-system get ds cilium >/dev/null 2>&1; then
+	cilium hubble port-forward >/dev/null 2>&1 &
+	HUBBLE_PF_PID=$!
+	# Wait for the relay port before tailing (best-effort, ~10s cap).
+	for _ in $(seq 1 10); do
+		if hubble status --server localhost:4245 >/dev/null 2>&1; then break; fi
+		sleep 1
+	done
+	# jsonpb is Hubble's newline-delimited JSON (one {"flow":{...}} per line);
+	# there is no "jsonl" format. flows.jsonl keeps the .jsonl extension since
+	# that is exactly the shape jsonpb emits.
+	hubble observe -f -o jsonpb --server localhost:4245 \
+		> "${DIR}/cilium/flows.jsonl" 2>"${DIR}/cilium/_capture.err" &
+	HUBBLE_OBS_PID=$!
+fi
+
 # The actual benchmark. Tee so the operator still sees live output while we
 # keep the full record. PIPESTATUS[0] is run.sh's exit code (not tee's).
 bash "${SCRIPT_DIR}/run.sh" "${bench}" "${request}" "${thread}" "${conn}" "${duration}" \
@@ -61,6 +85,8 @@ STATUS="${PIPESTATUS[0]}"
 
 kill "${SAMPLER}" 2>/dev/null
 wait "${SAMPLER}" 2>/dev/null
+[ -n "${HUBBLE_OBS_PID}" ] && { kill "${HUBBLE_OBS_PID}" 2>/dev/null; wait "${HUBBLE_OBS_PID}" 2>/dev/null; }
+[ -n "${HUBBLE_PF_PID}" ]  && { kill "${HUBBLE_PF_PID}"  2>/dev/null; wait "${HUBBLE_PF_PID}"  2>/dev/null; }
 
 END_EPOCH="$(date -u +%s)"
 END_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -71,6 +97,8 @@ awk '/Running .* test @/{p=1} p{print} /Transfer\/sec/{p=0}' \
 
 ISTIO_ON=false
 kubectl get ns istio-system >/dev/null 2>&1 && ISTIO_ON=true
+CILIUM_ON=false
+kubectl -n kube-system get ds cilium >/dev/null 2>&1 && CILIUM_ON=true
 
 cat > "${DIR}/meta.json" <<JSON
 {
@@ -85,6 +113,7 @@ cat > "${DIR}/meta.json" <<JSON
   "start_iso": "${START_ISO}",
   "end_iso": "${END_ISO}",
   "istio_enabled": ${ISTIO_ON},
+  "cilium_enabled": ${CILIUM_ON},
   "run_status": ${STATUS}
 }
 JSON

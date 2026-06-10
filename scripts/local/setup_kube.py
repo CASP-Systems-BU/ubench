@@ -4,7 +4,7 @@ from shell_helper import ShellHelper
 
 # Self-hosted (non-CloudLab) cluster orchestrator. Same structure as the
 # cloudlab variant but without the CloudLab-specific networking: flat single-NIC
-# LAN, so no kubelet/flannel interface pinning. Optionally enables Istio
+# LAN, so no kubelet/Cilium interface pinning. Optionally enables Istio
 # service-level metric collection (config "enable_istio_metrics").
 
 class KubeSetUp:

@@ -61,13 +61,14 @@ sudo ufw allow from 128.197.29.0/24
 sudo ufw allow from 128.197.28.0/24
 # internal
 sudo ufw allow from 10.0.0.0/24
-# k8s pod CIDR: pods reach host services (notably the API server at
-# 10.0.0.101:6443, fronted by the 10.96.0.1 ClusterIP) with a pod-IP source.
-# Worker pods get SNAT'd to a 10.0.0.x source by flannel on egress, but a pod
-# on the same node as the API server (e.g. CoreDNS on the control plane) is
-# delivered locally and keeps its 10.244.x source — so without this rule it
-# hits INPUT, gets dropped, CoreDNS never reaches the API and stays NotReady,
-# and cluster DNS has no endpoints. Pod traffic is internal, so allowing it is safe.
+# k8s pod CIDR (10.244.0.0/16, set by kubeadm --pod-network-cidr and honored by
+# the CNI): pods reach host services (notably the API server at 10.0.0.101:6443,
+# fronted by the 10.96.0.1 ClusterIP) with a pod-IP source. Cross-node pod egress
+# is masqueraded to a 10.0.0.x source, but a pod on the same node as the API
+# server (e.g. CoreDNS on the control plane) is delivered locally and keeps its
+# 10.244.x source — so without this rule it hits INPUT, gets dropped, CoreDNS
+# never reaches the API and stays NotReady, and cluster DNS has no endpoints.
+# CNI-agnostic: holds for flannel or Cilium as long as the pod CIDR is unchanged.
 sudo ufw allow from 10.244.0.0/16
 # ssh (key-only auth is enforced below)
 sudo ufw allow OpenSSH

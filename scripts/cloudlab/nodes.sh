@@ -5,9 +5,9 @@
 # config.json (10.0.0.101 == node-0, etc.). Update this list each time you
 # swap CloudLab experiments.
 NODES=(
-	"apt147.apt.emulab.net"   # node-0 / 10.0.0.101  (control-plane)
-	"apt156.apt.emulab.net"   # node-1 / 10.0.0.102
-	"apt159.apt.emulab.net"   # node-2 / 10.0.0.103
-	"apt162.apt.emulab.net"   # node-3 / 10.0.0.104
-	"apt139.apt.emulab.net"   # node-4 / 10.0.0.105
+	"apt083.apt.emulab.net"   # node-0 / 10.0.0.101  (control-plane)
+	"apt088.apt.emulab.net"   # node-1 / 10.0.0.102
+	"apt069.apt.emulab.net"   # node-2 / 10.0.0.103
+	"apt076.apt.emulab.net"   # node-3 / 10.0.0.104
+	"apt092.apt.emulab.net"   # node-4 / 10.0.0.105
 )

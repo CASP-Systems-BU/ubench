@@ -90,8 +90,8 @@ This runs, in order:
    driver** (required on Ubuntu 24.04 / cgroup v2).
 2. `init_kube.sh` on the control node — `kubeadm init`, API advertised on the
    control node IP.
-3. worker join + `after_join.sh` on the control node — kubeconfig, flannel CNI,
-   metrics-server.
+3. worker join + `after_join.sh` on the control node — kubeconfig, Cilium CNI
+   (+ Hubble), metrics-server.
 4. `enable_istio_metrics.sh` on the control node (because `enable_istio_metrics`
    is true) — installs the Istio control plane (demo profile), the Prometheus /
    Grafana / Kiali addons, and labels the `default` namespace
@@ -375,5 +375,5 @@ pods are admitted to the cluster.
 | `kube.sh` exits 2, `curl: command not found` | minimal image lacks curl | `kube.sh` now installs `curl ca-certificates gnupg apt-transport-https` |
 | `kubeadm init` fails / kubelet won't start | cgroup v2 driver mismatch; docker.io's containerd ships with CRI disabled | `kube.sh` regenerates `/etc/containerd/config.toml` with CRI enabled + `SystemdCgroup=true`, and sets kubelet to systemd |
 | One node stuck, `Could not get lock /var/lib/dpkg/lock-frontend` | `unattended-upgrades` holds the apt lock | stop/disable it (step 1.4), then re-run `kube.sh` on that node |
-| A node `NotReady`, flannel pod `Init:ImagePullBackOff` | transient `ghcr.io` 502 pulling the flannel image | `sudo crictl pull ghcr.io/flannel-io/flannel:<ver>` on that node, then `kubectl delete pod -n kube-flannel <pod>` |
+| A node `NotReady`, `cilium` agent pod not Ready | datapath not up yet / image pull | `cilium status --wait` on the control node; check `kubectl -n kube-system get pods -l k8s-app=cilium` |
 | heartbeat sweep `[FAIL]` for all services / `run.sh` hangs | the `echo \| nc` heartbeat is not valid HTTP for Envoy | ignore it under Istio; drive the load with the manual `wrk` step (4); the app and `wrk` use real HTTP and work |

@@ -61,6 +61,11 @@ def istio_present():
     return kubectl("get", "ns", PROM_NS, check=False).returncode == 0
 
 
+def cilium_present():
+    return kubectl("-n", "kube-system", "get", "ds", "cilium",
+                   check=False).returncode == 0
+
+
 def prom_query(base, path, params):
     url = f"{base}/api/v1/{path}?" + urllib.parse.urlencode(params)
     with urllib.request.urlopen(url, timeout=30) as r:
@@ -165,6 +170,107 @@ def collect_access_logs(out_dir, start_iso):
                     "Enable with: istioctl install --set meshConfig.accessLogFile=/dev/stdout\n")
 
 
+def _flow_endpoint_label(ep):
+    """Best-effort stable node label for a Hubble flow endpoint, robust to the
+    fields that may be missing (system flows, host traffic, world/CIDR)."""
+    if not isinstance(ep, dict):
+        return "unknown"
+    wls = ep.get("workloads") or []
+    if wls and wls[0].get("name"):
+        return wls[0]["name"]
+    pod = ep.get("pod_name") or ""
+    if pod:  # strip the replicaset/pod hash suffixes -> deployment-ish name
+        return "-".join(pod.split("-")[:-2]) if pod.count("-") >= 2 else pod
+    ns = ep.get("namespace")
+    if ns:
+        return f"{ns}/*"
+    ids = ep.get("labels") or []
+    for lbl in ids:
+        if lbl.startswith("reserved:"):
+            return lbl.split(":", 1)[1]   # world / host / remote-node / ...
+    return "unknown"
+
+
+def collect_cilium(out_dir, flows_path):
+    """Post-process the live-captured Hubble flows (flows.jsonl, written by
+    run_and_collect.sh) into a network call graph + DNS slice, and snapshot the
+    Hubble Prometheus metrics. The flow log is the L3/L4 (and DNS) analog to the
+    Istio Envoy access logs; edges.json is the network analog to istio/edges.json."""
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Hubble metrics endpoint (raw Prometheus text on :9965). Snapshot via a
+    # short-lived port-forward; cumulative counters, so a point-in-time grab.
+    pf = subprocess.Popen(
+        ["kubectl", "-n", "kube-system", "port-forward",
+         "svc/hubble-metrics", "9965:9965"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.time() + 15
+        text = None
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(
+                        "http://127.0.0.1:9965/metrics", timeout=10) as r:
+                    text = r.read().decode("utf-8", "replace")
+                break
+            except Exception:
+                time.sleep(1)
+        if text is not None:
+            with open(os.path.join(out_dir, "hubble_metrics.prom"), "w") as f:
+                f.write(text)
+        else:
+            print("[collect_metrics] WARN: could not scrape hubble-metrics:9965",
+                  file=sys.stderr)
+    finally:
+        pf.terminate()
+        try:
+            pf.wait(timeout=5)
+        except Exception:
+            pf.kill()
+
+    # Derive the network graph + DNS flows from the captured jsonl.
+    if not flows_path or not os.path.exists(flows_path):
+        return
+    edges = {}        # (src, dst, dport, verdict) -> count
+    dns_lines = []
+    n = 0
+    with open(flows_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            flow = obj.get("flow", obj)
+            n += 1
+            src = _flow_endpoint_label(flow.get("source"))
+            dst = _flow_endpoint_label(flow.get("destination"))
+            verdict = flow.get("verdict", "UNKNOWN")
+            l4 = flow.get("l4") or {}
+            dport = ""
+            for proto in ("TCP", "UDP", "ICMPv4", "ICMPv6"):
+                if proto in l4:
+                    dport = l4[proto].get("destination_port", proto)
+                    break
+            edges[(src, dst, str(dport), verdict)] = \
+                edges.get((src, dst, str(dport), verdict), 0) + 1
+            if (flow.get("l7") or {}).get("dns"):
+                dns_lines.append(line)
+
+    edge_list = [{"source": s, "destination": d, "destination_port": p,
+                  "verdict": v, "count": c}
+                 for (s, d, p, v), c in
+                 sorted(edges.items(), key=lambda kv: -kv[1])]
+    dump(os.path.join(out_dir, "edges.json"),
+         {"total_flows": n, "edges": edge_list})
+    with open(os.path.join(out_dir, "dns.jsonl"), "w") as f:
+        f.write("\n".join(dns_lines))
+    print(f"[collect_metrics] cilium: {n} flows -> {len(edge_list)} edges, "
+          f"{len(dns_lines)} dns")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True, help="run results dir (contains istio/)")
@@ -174,35 +280,45 @@ def main():
     ap.add_argument("--step", default="15s", help="time-series step (default 15s)")
     args = ap.parse_args()
 
-    istio_dir = os.path.join(args.dir, "istio")
-    if not istio_present():
-        print("[collect_metrics] no istio-system namespace; skipping Istio collection")
-        return 0
-    os.makedirs(istio_dir, exist_ok=True)
-
-    print("[collect_metrics] opening port-forward to Prometheus")
-    pf = subprocess.Popen(
-        ["kubectl", "-n", PROM_NS, "port-forward", PROM_SVC,
-         f"{PROM_PORT}:{PROM_PORT}"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        base = f"http://127.0.0.1:{PROM_PORT}"
-        if not wait_for_prom(base):
-            print("[collect_metrics] ERROR: Prometheus not reachable via port-forward",
-                  file=sys.stderr)
-            return 1
-        print("[collect_metrics] querying metrics over window "
-              f"[{args.start}, {args.end}] ({args.end - args.start}s)")
-        collect_metrics(base, istio_dir, args.start, args.end, args.step)
-        print("[collect_metrics] dumping Envoy access logs")
-        collect_access_logs(os.path.join(istio_dir, "access_logs"), args.start_iso)
-    finally:
-        pf.terminate()
+    # Istio and Cilium are independent sources; collect whichever is present.
+    if istio_present():
+        istio_dir = os.path.join(args.dir, "istio")
+        os.makedirs(istio_dir, exist_ok=True)
+        print("[collect_metrics] opening port-forward to Prometheus")
+        pf = subprocess.Popen(
+            ["kubectl", "-n", PROM_NS, "port-forward", PROM_SVC,
+             f"{PROM_PORT}:{PROM_PORT}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
-            pf.wait(timeout=5)
-        except Exception:
-            pf.kill()
-    print(f"[collect_metrics] done -> {istio_dir}")
+            base = f"http://127.0.0.1:{PROM_PORT}"
+            if not wait_for_prom(base):
+                print("[collect_metrics] ERROR: Prometheus not reachable via port-forward",
+                      file=sys.stderr)
+            else:
+                print("[collect_metrics] querying Istio metrics over window "
+                      f"[{args.start}, {args.end}] ({args.end - args.start}s)")
+                collect_metrics(base, istio_dir, args.start, args.end, args.step)
+                print("[collect_metrics] dumping Envoy access logs")
+                collect_access_logs(os.path.join(istio_dir, "access_logs"),
+                                    args.start_iso)
+        finally:
+            pf.terminate()
+            try:
+                pf.wait(timeout=5)
+            except Exception:
+                pf.kill()
+        print(f"[collect_metrics] done -> {istio_dir}")
+    else:
+        print("[collect_metrics] no istio-system namespace; skipping Istio collection")
+
+    if cilium_present():
+        cilium_dir = os.path.join(args.dir, "cilium")
+        print("[collect_metrics] processing Cilium/Hubble flows + metrics")
+        collect_cilium(cilium_dir, os.path.join(cilium_dir, "flows.jsonl"))
+        print(f"[collect_metrics] done -> {cilium_dir}")
+    else:
+        print("[collect_metrics] no cilium DaemonSet; skipping Cilium collection")
+
     return 0
 
 
