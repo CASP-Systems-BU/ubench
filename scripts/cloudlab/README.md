@@ -45,6 +45,36 @@ Flags:
 ./deploy.sh boutique --down
 ```
 
+### What `--run` collects, and where it goes
+
+`--run` wraps `run.sh` with `scripts/run_and_collect.sh`, which captures the run
+into a single self-contained directory on the control node and then copies it
+back to the host under `results/<bench>-<request>_<UTC-timestamp>/`:
+
+```
+meta.json          run params + time window + istio on/off
+run.log            full run.sh output (wrk result, heartbeat, top snapshot)
+wrk.txt            just the wrk latency/throughput block
+resources.csv      per-pod CPU/mem time-series, sampled every 5s (metrics-server)
+istio/             only when Istio is enabled (see below):
+  requests_total.json / request_duration_ms.json / *_bytes.json
+                   raw Istio counters/histograms as a 15s time-series over the run
+  edges.json       source -> destination request counts for THIS run (the call graph)
+  summary.json     per-service request rate / error rate / p50-p90-p99 latency
+  access_logs/*.log  Envoy per-request access logs (one structured line per request)
+```
+
+The Istio metrics come from the in-cluster Prometheus via a temporary
+port-forward (no NodePort needed); the per-run figures use `increase()`/`rate()`
+over the exact run window and are filtered to `reporter="destination"` so each
+request is counted once. On a cluster **without** Istio, the `istio/` directory
+is simply skipped and the rest is still collected. `results/` is gitignored.
+
+> Note: a service whose port Istio classifies as plain TCP records metrics but
+> emits no per-request HTTP access log — its `access_logs/*.log` will be empty
+> even though it appears in `edges.json`/`summary.json` (observed for
+> `productcatalog` in boutique). The aggregated metrics for it are still complete.
+
 ## 5. Istio service-level metrics (optional)
 
 With Istio enabled, every benchmark pod gets an Envoy sidecar (`2/2`) that

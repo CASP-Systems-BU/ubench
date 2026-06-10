@@ -137,23 +137,39 @@ EOF
 echo
 echo "[*] '${BENCH}' deployed and verified on ${MAIN}."
 
-# --- run the wrk workload (optional) --------------------------------------
-# scripts/run.sh drives the benchmark: it deploys the load-generator client pod
-# (public image yizhengx/mucache:client) and execs `wrk` against the services.
-# It expects to live at ~/ubench/scripts/run.sh with ~/ubench/client/ alongside
-# the k8s manifests, so copy those up before invoking it on the control node.
-# (`kubectl top` inside run.sh needs metrics-server, which isn't installed — it
-# prints an error there but is non-fatal and does not affect the wrk result.)
+# --- run the wrk workload + collect metrics (optional) --------------------
+# run_and_collect.sh wraps scripts/run.sh (which deploys the load-generator
+# client pod yizhengx/mucache:client and execs `wrk`) with metric/log capture:
+# wrk output, a kubectl-top resource time-series, and — when Istio is enabled —
+# the per-service Prometheus metrics, call graph, and Envoy access logs. They
+# all land in one run directory on the control node, which we copy back to the
+# host's results/ afterwards. The collection wrapper + collector are copied up
+# alongside run.sh and client/ (run.sh expects ~/ubench/{scripts,client,k8s}).
 if [[ "${RUN}" -eq 1 ]]; then
 	echo
-	echo "[*] Copying run.sh + client/ to ${MAIN}"
-	ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" "mkdir -p ~/ubench/scripts"
-	scp "${SSH_OPTS[@]}" "${REPO_ROOT}/scripts/run.sh" "${SSH_USER}@${MAIN}:~/ubench/scripts/"
+	echo "[*] Copying run.sh + collectors + client/ to ${MAIN}"
+	ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" "mkdir -p ~/ubench/scripts ~/ubench/results"
+	scp "${SSH_OPTS[@]}" \
+		"${REPO_ROOT}/scripts/run.sh" \
+		"${REPO_ROOT}/scripts/run_and_collect.sh" \
+		"${REPO_ROOT}/scripts/collect_metrics.py" \
+		"${SSH_USER}@${MAIN}:~/ubench/scripts/"
 	scp "${SSH_OPTS[@]}" -r "${REPO_ROOT}/client" "${SSH_USER}@${MAIN}:~/ubench/"
 
-	echo "[*] Running wrk: ${BENCH} request=${REQUEST} threads=${THREADS} conns=${CONNS} duration=${DURATION}s"
+	# One run id, shared by the remote run dir and the host copy, so we know
+	# exactly which directory to pull back without parsing the live output.
+	RUN_ID="$(date -u +%Y%m%d-%H%M%S)"
+	REMOTE_HOME="$(ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" 'echo $HOME')"
+	REMOTE_DIR="${REMOTE_HOME}/ubench/results/${BENCH}-${REQUEST}_${RUN_ID}"
+	LOCAL_RESULTS="${REPO_ROOT}/results"
+	mkdir -p "${LOCAL_RESULTS}"
+
+	echo "[*] Running wrk + collecting metrics: ${BENCH} request=${REQUEST} threads=${THREADS} conns=${CONNS} duration=${DURATION}s (run ${RUN_ID})"
 	ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" \
-		"bash ~/ubench/scripts/run.sh ${BENCH} ${REQUEST} ${THREADS} ${CONNS} ${DURATION}"
+		"RUN_ID=${RUN_ID} bash ~/ubench/scripts/run_and_collect.sh ${BENCH} ${REQUEST} ${THREADS} ${CONNS} ${DURATION}"
+
 	echo
-	echo "[*] wrk workload finished on ${MAIN}."
+	echo "[*] Copying run dir back -> ${LOCAL_RESULTS}/"
+	scp "${SSH_OPTS[@]}" -r "${SSH_USER}@${MAIN}:${REMOTE_DIR}" "${LOCAL_RESULTS}/"
+	echo "[*] wrk workload finished on ${MAIN}; metrics in ${LOCAL_RESULTS}/${BENCH}-${REQUEST}_${RUN_ID}/"
 fi
