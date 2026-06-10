@@ -165,7 +165,10 @@ if [[ "${RUN}" -eq 1 ]]; then
 	mkdir -p "${LOCAL_RESULTS}"
 
 	echo "[*] Running wrk + collecting metrics: ${BENCH} request=${REQUEST} threads=${THREADS} conns=${CONNS} duration=${DURATION}s (run ${RUN_ID})"
-	ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" \
+	# -A forwards the ssh-agent so the collector can SSH control->worker to read
+	# the rotated Envoy access logs off each node's /var/log/pods (kubelet rotates
+	# busy sidecars mid-run, and `kubectl logs` only returns the current file).
+	ssh -A "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" \
 		"RUN_ID=${RUN_ID} bash ~/ubench/scripts/run_and_collect.sh ${BENCH} ${REQUEST} ${THREADS} ${CONNS} ${DURATION}"
 
 	echo

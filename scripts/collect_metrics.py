@@ -28,13 +28,21 @@ If the cluster has no Istio (no istio-system namespace) this is a no-op so the
 caller can run it unconditionally on bare clusters.
 """
 import argparse
+import datetime
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
 import urllib.parse
 import urllib.request
+
+# control -> worker SSH (over the experiment LAN). Relies on the ssh-agent being
+# forwarded into the control node (deploy.sh runs the collection with `ssh -A`);
+# the worker's sudo is NOPASSWD on CloudLab, so we can read /var/log/pods.
+WORKER_SSH_OPTS = ["-o", "StrictHostKeyChecking=accept-new",
+                   "-o", "ConnectTimeout=10", "-o", "BatchMode=yes"]
 
 PROM_NS = "istio-system"
 PROM_SVC = "svc/prometheus"
@@ -143,28 +151,131 @@ def collect_metrics(base, out_dir, start, end, step):
     dump(os.path.join(out_dir, "summary.json"), summary)
 
 
-def collect_access_logs(out_dir, start_iso):
-    """Dump each mesh pod's Envoy sidecar access log, sliced to the run window."""
+def _node_internal_ips():
+    """node name -> InternalIP (10.0.0.x), so we can SSH the worker that hosts a pod."""
+    out = kubectl(
+        "get", "nodes", "-o",
+        "jsonpath={range .items[*]}{.metadata.name}{' '}"
+        "{.status.addresses[?(@.type=='InternalIP')].address}{'\\n'}{end}",
+        check=False).stdout
+    m = {}
+    for line in out.strip().splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            m[parts[0]] = parts[1]
+    return m
+
+
+def _strip_cri_prefix(text):
+    """CRI log lines are '<ts> <stream> <F|P> <content>'; keep <content> so the
+    output matches what `kubectl logs` would have produced (the raw Envoy line)."""
+    out = []
+    for ln in text.splitlines():
+        parts = ln.split(" ", 3)
+        out.append(parts[3] if len(parts) == 4 else ln)
+    return "\n".join(out)
+
+
+def _envoy_line_epoch(line):
+    """Parse the leading bracketed UTC timestamp of an Envoy access-log line,
+    e.g. '[2026-06-10T08:30:37.742Z] "POST ...' -> epoch seconds. Returns None
+    for non-access lines (Envoy operational logs have no leading [..Z])."""
+    if not line.startswith("["):
+        return None
+    end = line.find("]")
+    if end < 0:
+        return None
+    ts = line[1:end]
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    try:
+        return datetime.datetime.fromisoformat(ts).timestamp()
+    except ValueError:
+        return None
+
+
+def _window_filter(text, start_epoch, end_epoch):
+    """Keep only access-log lines whose Envoy timestamp falls in [start,end].
+    Pods persist across runs, so the full rotated log is cumulative — this scopes
+    it to THIS run, matching the Istio metrics and live-streamed Cilium flows.
+    Drops Envoy operational (non-access) lines too, leaving a clean access log."""
+    kept = []
+    for ln in text.splitlines():
+        e = _envoy_line_epoch(ln)
+        if e is not None and start_epoch <= e <= end_epoch:
+            kept.append(ln)
+    return "\n".join(kept)
+
+
+def _read_rotated_logs(node_ip, ns, pod, uid, container="istio-proxy"):
+    """SSH the worker and concatenate ALL of the container's CRI log files
+    (rotated + current), oldest->newest, decompressing .gz. This is the whole
+    point of the rotated-file approach: `kubectl logs` only returns the current
+    0.log, which is empty after a high-volume run rotates it. Returns the raw
+    concatenated text, or None if the node is unreachable / dir missing (caller
+    then falls back to `kubectl logs`)."""
+    if not node_ip:
+        return None
+    logdir = f"/var/log/pods/{ns}_{pod}_{uid}/{container}"
+    # Single NOPASSWD sudo sh -c: list rotated files sorted by their timestamp
+    # suffix, zcat/cat each, then the current 0.log. exit 3 if the dir is gone.
+    script = (
+        f'd={shlex.quote(logdir)}; [ -d "$d" ] || exit 3; '
+        'for f in $(ls "$d"/0.log.* 2>/dev/null | sort); do '
+        'case "$f" in *.gz) zcat "$f" ;; *) cat "$f" ;; esac; done; '
+        'cat "$d"/0.log 2>/dev/null'
+    )
+    remote = "sudo sh -c " + shlex.quote(script)
+    p = subprocess.run(["ssh", *WORKER_SSH_OPTS, node_ip, remote],
+                       text=True, capture_output=True)
+    if p.returncode != 0:
+        return None
+    return p.stdout
+
+
+def collect_access_logs(out_dir, start_iso, start_epoch, end_epoch):
+    """Write each mesh pod's Envoy access log for THIS run by reading the rotated
+    CRI log files off its node (kubelet rotates at 10Mi, and a busy sidecar
+    rotates mid-run, so `kubectl logs` alone silently drops the bulk of the log),
+    then window-filtering to [start,end]. Falls back to `kubectl logs` per pod if
+    the worker can't be reached."""
     os.makedirs(out_dir, exist_ok=True)
-    pods = kubectl("get", "pods", "-o",
-                   "jsonpath={range .items[*]}{.metadata.name}{\" \"}"
-                   "{range .spec.containers[*]}{.name}{\",\"}{end}{\"\\n\"}{end}",
-                   check=False).stdout.strip().splitlines()
+    node_ips = _node_internal_ips()
+    pods = kubectl(
+        "get", "pods", "-o",
+        "jsonpath={range .items[*]}{.metadata.name}{'|'}{.metadata.uid}{'|'}"
+        "{.spec.nodeName}{'|'}{range .spec.containers[*]}{.name}{','}{end}{'\\n'}{end}",
+        check=False).stdout.strip().splitlines()
     found_any = False
+    used_fallback = False
     for line in pods:
         if not line.strip():
             continue
-        pod, _, containers = line.partition(" ")
+        try:
+            pod, uid, node, containers = line.split("|", 3)
+        except ValueError:
+            continue
         if "istio-proxy" not in containers.split(","):
             continue  # no sidecar (e.g. ubuntu-client) -> nothing to pull
-        logs = kubectl("logs", pod, "-c", "istio-proxy",
-                       f"--since-time={start_iso}", check=False)
+
+        raw = _read_rotated_logs(node_ips.get(node), "default", pod, uid)
+        if raw is not None:
+            text = _strip_cri_prefix(raw)
+        else:
+            # SSH/agent unavailable -> degrade to the (rotation-blind) API path.
+            text = kubectl("logs", pod, "-c", "istio-proxy",
+                           f"--since-time={start_iso}", check=False).stdout
+            used_fallback = True
+        text = _window_filter(text, start_epoch, end_epoch)
         with open(os.path.join(out_dir, f"{pod}.log"), "w") as f:
-            f.write(logs.stdout)
-        if logs.stdout.strip():
+            f.write(text)
+        if text.strip():
             found_any = True
+    if used_fallback:
+        print("[collect_metrics] WARN: some access logs fell back to `kubectl logs` "
+              "(worker unreachable -> rotated lines may be missing). Run via `ssh -A`.",
+              file=sys.stderr)
     if not found_any:
-        # Access logging is off in some Istio profiles; leave a breadcrumb.
         with open(os.path.join(out_dir, "_README.txt"), "w") as f:
             f.write("Envoy access logs were empty.\n"
                     "Enable with: istioctl install --set meshConfig.accessLogFile=/dev/stdout\n")
@@ -300,7 +411,7 @@ def main():
                 collect_metrics(base, istio_dir, args.start, args.end, args.step)
                 print("[collect_metrics] dumping Envoy access logs")
                 collect_access_logs(os.path.join(istio_dir, "access_logs"),
-                                    args.start_iso)
+                                    args.start_iso, args.start, args.end)
         finally:
             pf.terminate()
             try:

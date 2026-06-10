@@ -82,10 +82,17 @@ application** view — HTTP/gRPC requests, codes, latency — while Cilium/Hubbl
 gives the **L3/L4 network** view — every socket-level flow, DNS lookup, and
 dropped/denied packet — that no sidecar can see.
 
-> Note: a service whose port Istio classifies as plain TCP records metrics but
-> emits no per-request HTTP access log — its `access_logs/*.log` will be empty
-> even though it appears in `edges.json`/`summary.json` (observed for
-> `productcatalog` in boutique). The aggregated metrics for it are still complete.
+> Access logs (`istio/access_logs/*.log`) are read from the rotated CRI log
+> files on each node, not via `kubectl logs`. kubelet rotates a container's log
+> at 10Mi (`containerLogMaxSize` default) and `kubectl logs` only returns the
+> *current* file — so a busy sidecar that rotates mid-run (e.g. frontend or
+> productcatalog under load) would otherwise come back empty even though it
+> logged tens of MB. The collector SSHes control→worker (needs `ssh -A`, which
+> `deploy.sh` sets), concatenates all `0.log.*` (decompressing `.gz`), and
+> window-filters to the run. If a worker is unreachable it falls back to
+> `kubectl logs` and prints a WARN. As a belt-and-suspenders alternative you can
+> raise `containerLogMaxSize` (e.g. to 500Mi) in `kube.sh` so logs don't rotate
+> mid-run — then plain `kubectl logs` would suffice.
 
 ## 5. Istio service-level metrics (optional)
 
