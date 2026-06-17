@@ -31,6 +31,9 @@ spec:
       labels:
         app: "movieinfo"
     spec:
+      # Pinned for reproducible pod->node placement (see PLACEMENT.md in this dir).
+      nodeSelector:
+        ubench.io/node-index: "1"
       containers:
         - name: "movieinfo"
           image: yizhengx/ubench:movie

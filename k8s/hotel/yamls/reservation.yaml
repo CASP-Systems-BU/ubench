@@ -31,6 +31,9 @@ spec:
       labels:
         app: "reservation"
     spec:
+      # Pinned for reproducible pod->node placement (see PLACEMENT.md in this dir).
+      nodeSelector:
+        ubench.io/node-index: "4"
       containers:
         - name: "reservation"
           image: yizhengx/ubench:hotel

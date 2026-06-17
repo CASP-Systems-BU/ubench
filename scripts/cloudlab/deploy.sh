@@ -94,6 +94,28 @@ if [[ "${DOWN}" -eq 1 ]]; then
 	exit 0
 fi
 
+# --- deterministic node labels --------------------------------------------
+# Manifests pin pods to nodes with `nodeSelector: ubench.io/node-index: "<N>"`
+# so the pod->node layout — and therefore the cross-node network flow graph —
+# is identical on every run. Those labels have to exist first. We key them off
+# the stable node-<N> ordinal (the CloudLab hostname embeds the experiment name,
+# e.g. node-3.ubench-7..., which changes between experiments; the ordinal does
+# not). Idempotent (`--overwrite`), so it re-applies and self-heals each deploy.
+echo "[*] Labeling nodes with ubench.io/node-index=<ordinal> on ${MAIN}"
+ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" "bash -s" <<'EOF'
+set -e
+for node in $(kubectl get nodes -o name); do
+	name="${node#node/}"
+	idx="$(printf '%s' "${name}" | sed -nE 's/^node-([0-9]+).*/\1/p')"
+	if [ -n "${idx}" ]; then
+		kubectl label node "${name}" "ubench.io/node-index=${idx}" --overwrite >/dev/null
+	else
+		echo "  [!] ${name} doesn't match node-<N>; not labeling (pods selecting it stay Pending)" >&2
+	fi
+done
+kubectl get nodes -L ubench.io/node-index
+EOF
+
 # Apply + wait + verify, all on the control node. Heredoc is quoted ('EOF') so
 # it is sent verbatim; the benchmark name is passed as $1 to the remote bash,
 # and everything else is evaluated on the control node.

@@ -31,6 +31,9 @@ spec:
       labels:
         app: "checkout"
     spec:
+      # Pinned for reproducible pod->node placement (see k8s/boutique/PLACEMENT.md).
+      nodeSelector:
+        ubench.io/node-index: "2"
       containers:
         - name: "checkout"
           image: yizhengx/ubench:boutique

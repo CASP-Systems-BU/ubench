@@ -14,6 +14,21 @@ Edit [nodes.sh](nodes.sh) — the single shared list of public hostnames sourced
 the order must match the internal-IP order in [config.json](config.json). This is the only
 file you edit when swapping experiments.
 
+> **Cluster topology is now fixed at exactly 5 nodes.** The workloads pin every
+> service to a specific node via `nodeSelector: ubench.io/node-index: "<N>"` so
+> the pod→node layout (and therefore the network flow topology) is reproducible
+> across runs — see the per-workload `PLACEMENT.md` (e.g.
+> [k8s/boutique/PLACEMENT.md](../../k8s/boutique/PLACEMENT.md)). This requires:
+>
+> - **node-0** = the control plane (tainted `NoSchedule`, runs no services), and
+> - **node-1 … node-4** = exactly four workers that run the services.
+>
+> `deploy.sh` labels each node `ubench.io/node-index=<N>` from its `node-<N>`
+> ordinal on every deploy, so `nodes.sh` must list all five in order
+> (node-0 first). A cluster with fewer than four workers will leave some pods
+> stuck `Pending` (the selected node-index label won't exist); more than four
+> just go unused. The **r320x5** profile created by Yuanli `pentium3` gives exactly this shape.
+
 ## 3. Bootstrap the cluster
 
 ```bash

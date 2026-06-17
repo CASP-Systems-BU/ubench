@@ -31,6 +31,9 @@ spec:
       labels:
         app: "poststorage"
     spec:
+      # Pinned for reproducible pod->node placement (see PLACEMENT.md in this dir).
+      nodeSelector:
+        ubench.io/node-index: "3"
       containers:
         - name: "poststorage"
           image: yizhengx/ubench:social

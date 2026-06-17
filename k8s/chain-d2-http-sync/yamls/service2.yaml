@@ -27,6 +27,9 @@ spec:
                 version: ""
             annotations: {}
         spec:
+            # Pinned for reproducible pod->node placement (see PLACEMENT.md in this dir).
+            nodeSelector:
+              ubench.io/node-index: "3"
             containers:
                 - name: app
                   image: yizhengx/mesh:synthetic

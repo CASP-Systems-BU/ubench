@@ -31,6 +31,9 @@ spec:
       labels:
         app: "shipping"
     spec:
+      # Pinned for reproducible pod->node placement (see k8s/boutique/PLACEMENT.md).
+      nodeSelector:
+        ubench.io/node-index: "4"
       containers:
         - name: "shipping"
           image: yizhengx/ubench:boutique
