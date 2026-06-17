@@ -31,6 +31,9 @@ spec:
       labels:
         app: "profile"
     spec:
+      # Pinned for reproducible pod->node placement (see PLACEMENT.md in this dir).
+      nodeSelector:
+        ubench.io/node-index: "2"
       containers:
         - name: "profile"
           image: yizhengx/ubench:hotel

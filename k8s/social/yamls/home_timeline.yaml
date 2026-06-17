@@ -31,6 +31,9 @@ spec:
       labels:
         app: "hometimeline"
     spec:
+      # Pinned for reproducible pod->node placement (see PLACEMENT.md in this dir).
+      nodeSelector:
+        ubench.io/node-index: "2"
       containers:
         - name: "hometimeline"
           image: yizhengx/ubench:social

@@ -18,6 +18,11 @@ spec:
       annotations:
         sidecar.istio.io/inject: "false"
     spec:
+      # Pinned to the ingress node so the client->frontend path (and thus the
+      # ingress flow topology) is identical on every run. node-index 1 always
+      # exists; see k8s/boutique/PLACEMENT.md.
+      nodeSelector:
+        ubench.io/node-index: "1"
       containers:
       - name: hr-client
         image: yizhengx/mucache:client
