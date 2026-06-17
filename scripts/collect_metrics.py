@@ -302,11 +302,32 @@ def _flow_endpoint_label(ep):
     return "unknown"
 
 
-def collect_cilium(out_dir, flows_path):
+def _flow_epoch(flow):
+    """Epoch seconds for a Hubble flow's RFC3339 'time' (nanosecond precision,
+    trailing Z), or None if unparseable. fromisoformat only takes 3/6 fractional
+    digits, so truncate the nanoseconds to microseconds first."""
+    ts = flow.get("time") or ""
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    if "." in ts:
+        head, _, tail = ts.partition(".")
+        frac, sign, off = tail.partition("+") if "+" in tail else (tail, "", "")
+        ts = f"{head}.{frac[:6]}{sign}{off}"
+    try:
+        return datetime.datetime.fromisoformat(ts).timestamp()
+    except ValueError:
+        return None
+
+
+def collect_cilium(out_dir, flows_path, start=None, end=None):
     """Post-process the live-captured Hubble flows (flows.jsonl, written by
     run_and_collect.sh) into a network call graph + DNS slice, and snapshot the
     Hubble Prometheus metrics. The flow log is the L3/L4 (and DNS) analog to the
-    Istio Envoy access logs; edges.json is the network analog to istio/edges.json."""
+    Istio Envoy access logs; edges.json is the network analog to istio/edges.json.
+
+    flows.jsonl is the raw live capture (spans the whole run, setup included);
+    the derived edges/dns are scoped to [start,end] (the wrk window) when given,
+    so they match the Istio metrics and Envoy access logs."""
     os.makedirs(out_dir, exist_ok=True)
 
     # Hubble metrics endpoint (raw Prometheus text on :9965). Snapshot via a
@@ -344,7 +365,8 @@ def collect_cilium(out_dir, flows_path):
         return
     edges = {}        # (src, dst, dport, verdict) -> count
     dns_lines = []
-    n = 0
+    n = 0              # flows in window (aggregated)
+    n_total = 0        # flows in the raw capture (whole run)
     with open(flows_path) as f:
         for line in f:
             line = line.strip()
@@ -355,6 +377,13 @@ def collect_cilium(out_dir, flows_path):
             except json.JSONDecodeError:
                 continue
             flow = obj.get("flow", obj)
+            n_total += 1
+            # Scope to the wrk window, mirroring the Istio query / access-log
+            # filter. Flows without a parseable timestamp are kept (fail-open).
+            if start is not None and end is not None:
+                e = _flow_epoch(flow)
+                if e is not None and not (start <= e <= end):
+                    continue
             n += 1
             src = _flow_endpoint_label(flow.get("source"))
             dst = _flow_endpoint_label(flow.get("destination"))
@@ -375,11 +404,11 @@ def collect_cilium(out_dir, flows_path):
                  for (s, d, p, v), c in
                  sorted(edges.items(), key=lambda kv: -kv[1])]
     dump(os.path.join(out_dir, "edges.json"),
-         {"total_flows": n, "edges": edge_list})
+         {"total_flows": n, "captured_flows": n_total, "edges": edge_list})
     with open(os.path.join(out_dir, "dns.jsonl"), "w") as f:
         f.write("\n".join(dns_lines))
-    print(f"[collect_metrics] cilium: {n} flows -> {len(edge_list)} edges, "
-          f"{len(dns_lines)} dns")
+    print(f"[collect_metrics] cilium: {n}/{n_total} flows in window -> "
+          f"{len(edge_list)} edges, {len(dns_lines)} dns")
 
 
 def main():
@@ -425,7 +454,8 @@ def main():
     if cilium_present():
         cilium_dir = os.path.join(args.dir, "cilium")
         print("[collect_metrics] processing Cilium/Hubble flows + metrics")
-        collect_cilium(cilium_dir, os.path.join(cilium_dir, "flows.jsonl"))
+        collect_cilium(cilium_dir, os.path.join(cilium_dir, "flows.jsonl"),
+                       start=args.start, end=args.end)
         print(f"[collect_metrics] done -> {cilium_dir}")
     else:
         print("[collect_metrics] no cilium DaemonSet; skipping Cilium collection")

@@ -83,6 +83,13 @@ bash "${SCRIPT_DIR}/run.sh" "${bench}" "${request}" "${thread}" "${conn}" "${dur
 	2>&1 | tee "${DIR}/run.log"
 STATUS="${PIPESTATUS[0]}"
 
+# wrk runs at the very end of run.sh and run.sh exits immediately after it, so
+# "now" is effectively the wrk end. Capture it BEFORE teardown so the metric
+# window is the load phase, not the whole run (deploy verification, the
+# heartbeat connectivity sweep, populate, and the inter-step sleeps all happen
+# inside START_EPOCH..END_EPOCH and would otherwise dilute every rate/percentile).
+WRK_END_EPOCH="$(date -u +%s)"
+
 kill "${SAMPLER}" 2>/dev/null
 wait "${SAMPLER}" 2>/dev/null
 [ -n "${HUBBLE_OBS_PID}" ] && { kill "${HUBBLE_OBS_PID}" 2>/dev/null; wait "${HUBBLE_OBS_PID}" 2>/dev/null; }
@@ -95,11 +102,31 @@ END_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 awk '/Running .* test @/{p=1} p{print} /Transfer\/sec/{p=0}' \
 	"${DIR}/run.log" > "${DIR}/wrk.txt"
 
+# Metric window = the wrk load phase only. wrk reports its own measured wall time
+# ("N requests in 30.02s, ..."); use that as the window length (rounded up) and
+# anchor it to WRK_END_EPOCH. Fall back to the requested duration if the line is
+# missing (e.g. wrk crashed). This window is what the Istio queries, the Envoy
+# access-log filter, and the Cilium flow aggregation are all scoped to.
+# Portable extract (sed, not gawk's 3-arg match which mawk lacks) of "...in 30.02s".
+WRK_SECONDS="$(sed -n 's/.*requests in \([0-9.]*\)s.*/\1/p' "${DIR}/wrk.txt" | head -1)"
+if [ -z "${WRK_SECONDS}" ]; then
+	WRK_WINDOW="${duration}"
+else
+	# ceil() so a 30.02s run yields a 31s window that fully contains the load.
+	WRK_WINDOW="$(awk -v s="${WRK_SECONDS}" 'BEGIN{print int(s)+(s>int(s)?1:0)}')"
+fi
+WRK_START_EPOCH=$(( WRK_END_EPOCH - WRK_WINDOW ))
+WRK_START_ISO="$(date -u -d "@${WRK_START_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)"
+WRK_END_ISO="$(date -u -d "@${WRK_END_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)"
+
 ISTIO_ON=false
 kubectl get ns istio-system >/dev/null 2>&1 && ISTIO_ON=true
 CILIUM_ON=false
 kubectl -n kube-system get ds cilium >/dev/null 2>&1 && CILIUM_ON=true
 
+# start_epoch/end_epoch are the METRIC window (the wrk load phase); every metric
+# file is scoped to it. capture_*_epoch is the full run_and_collect span (setup
+# included) — kept for reference and for matching against the raw flows.jsonl.
 cat > "${DIR}/meta.json" <<JSON
 {
   "benchmark": "${bench}",
@@ -108,20 +135,25 @@ cat > "${DIR}/meta.json" <<JSON
   "connections": ${conn},
   "duration_s": ${duration},
   "run_id": "${RUN_ID}",
-  "start_epoch": ${START_EPOCH},
-  "end_epoch": ${END_EPOCH},
-  "start_iso": "${START_ISO}",
-  "end_iso": "${END_ISO}",
+  "start_epoch": ${WRK_START_EPOCH},
+  "end_epoch": ${WRK_END_EPOCH},
+  "start_iso": "${WRK_START_ISO}",
+  "end_iso": "${WRK_END_ISO}",
+  "capture_start_epoch": ${START_EPOCH},
+  "capture_end_epoch": ${END_EPOCH},
+  "capture_start_iso": "${START_ISO}",
+  "capture_end_iso": "${END_ISO}",
   "istio_enabled": ${ISTIO_ON},
   "cilium_enabled": ${CILIUM_ON},
   "run_status": ${STATUS}
 }
 JSON
 
-# Istio metrics + access logs (self-skips if Istio is absent).
+# Istio metrics + access logs (self-skips if Istio is absent). Scoped to the wrk
+# window so rates/percentiles reflect peak load, not the diluted whole-run span.
 python3 "${SCRIPT_DIR}/collect_metrics.py" \
-	--dir "${DIR}" --start "${START_EPOCH}" --end "${END_EPOCH}" \
-	--start-iso "${START_ISO}" || echo "[run_and_collect] WARN: metric collection failed"
+	--dir "${DIR}" --start "${WRK_START_EPOCH}" --end "${WRK_END_EPOCH}" \
+	--start-iso "${WRK_START_ISO}" || echo "[run_and_collect] WARN: metric collection failed"
 
 echo "[run_and_collect] run dir: ${DIR}"
 # Last line is the absolute run dir, so the caller can locate it to copy back.

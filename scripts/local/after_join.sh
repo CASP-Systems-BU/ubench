@@ -29,6 +29,38 @@ cilium install \
 	--set hubble.metrics.enabled="{dns,drop,tcp,flow,port-distribution,icmp}"
 cilium status --wait
 
+# L7 DNS visibility (OBSERVATION ONLY). Without an L7 rule, Hubble sees port-53
+# traffic at L3/L4 only, so cilium/dns.jsonl is empty (we see THAT a pod hit
+# CoreDNS, not WHICH name it resolved). This routes DNS through Cilium's DNS
+# proxy so flows carry the parsed query/response. enableDefaultDeny:false keeps
+# it purely additive — it never drops traffic. HTTP stays with Istio.
+# Canonical copy + rationale: k8s/cilium/dns-visibility.yaml (keep in sync).
+kubectl apply -f - <<'EOF'
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: dns-visibility
+spec:
+  endpointSelector: {}
+  enableDefaultDeny:
+    egress: false
+    ingress: false
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+EOF
+
 # metrics-server so `kubectl top nodes/pods` works (run.sh samples pod CPU/mem
 # mid-test). On a kubeadm cluster the kubelet serving cert isn't signed by the
 # cluster CA, so the default secure scrape fails — inject --kubelet-insecure-tls.

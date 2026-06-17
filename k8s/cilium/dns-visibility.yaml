@@ -1,0 +1,43 @@
+# Cilium L7 DNS visibility — OBSERVATION ONLY (does not enforce / drop anything).
+#
+# Why: without an L7 rule, Cilium sees port-53 traffic at L3/L4 only, so Hubble
+# flows carry no `l7.dns` record and the per-run `cilium/dns.jsonl` is empty — we
+# can see THAT a pod talked to CoreDNS, but not WHICH name it resolved. Attaching
+# a DNS L7 rule routes that pod's DNS through Cilium's DNS proxy, which parses the
+# query/response and emits it as an L7 flow (-> populates dns.jsonl and adds
+# `Type: L7` DNS events to flows.jsonl).
+#
+# Why it's safe: `enableDefaultDeny: {egress,ingress}: false` means this policy is
+# purely ADDITIVE — it installs the DNS proxy redirect for visibility but does NOT
+# flip endpoints to default-deny, so all other traffic keeps flowing untouched.
+# (matchPattern "*" observes every name without restricting any.)
+#
+# Requires Cilium >= 1.14 (the `enableDefaultDeny` field) and `--enable-l7-proxy`
+# (the install default). after_join.sh installs the latest stable Cilium, so both
+# hold. HTTP is intentionally left to Istio (see scripts/cloudlab/README.md §6);
+# this adds DNS-name provenance only.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: dns-visibility
+spec:
+  # All endpoints, every namespace (cluster-wide), current and future.
+  endpointSelector: {}
+  # The critical bit: observe, never enforce.
+  enableDefaultDeny:
+    egress: false
+    ingress: false
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
