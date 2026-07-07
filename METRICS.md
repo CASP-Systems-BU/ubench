@@ -61,7 +61,7 @@ results/<bench>-<request>_<RUN_ID>/
 
 ---
 
-## 3. The unifying idea: one window, four altitudes
+## 3. One window, Four altitudes
 
 `run_and_collect.sh` scopes every metric file to the **wrk load phase** — the window
 `start_epoch`/`end_epoch` in `meta.json`, anchored to wrk's end and sized by wrk's own

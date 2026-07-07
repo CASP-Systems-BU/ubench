@@ -197,3 +197,20 @@ cilium hubble port-forward &
 hubble observe --follow                       # live flow stream
 hubble observe --verdict DROPPED              # just denied traffic
 ```
+
+## Red-team attack simulation + labeled capture
+
+To capture **labeled** benign+malicious data (an injected adversary on top of the
+normal metric bundle), use the Stratus Red Team integration:
+
+```bash
+./enable_audit.sh enable        # one-time: turn on the kube-apiserver audit log (reversible)
+./attack.sh boutique            # benign load + a control-plane attack, captured + labeled
+```
+
+This deploys the app, drives benign `wrk` load, detonates a Stratus Red Team
+Kubernetes technique mid-window, captures the full bundle **plus** the audit log
+(`audit/`) and ground truth (`attack/`), and labels every audit event / network
+flow benign|malicious. See [`RED_TEAM.md`](../../RED_TEAM.md) for the full guide,
+the technique catalog, the labeling rules, and an honest fit assessment
+(Stratus emulates *control-plane* attacks; the signal lives in the audit log).
