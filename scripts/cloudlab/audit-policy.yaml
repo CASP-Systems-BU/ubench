@@ -1,0 +1,69 @@
+apiVersion: audit.k8s.io/v1
+kind: Policy
+# Audit policy tuned for capturing control-plane attack provenance (Stratus Red
+# Team k8s techniques) without drowning the log in normal control-plane chatter.
+#
+# Rules are first-match-wins, top to bottom:
+#   1. drop the loud, low-value reads from the control-plane components & nodes,
+#   2. log credential-access / RBAC / pod-create / exec at RequestResponse (full
+#      request+response bodies — this is where "list all secrets", "create a
+#      privileged pod", "create an admin clusterrole" etc. are unambiguous),
+#   3. log everything else at Metadata (who / verb / resource / time, no bodies).
+#
+# RequestReceived is omitted so each event appears once (at ResponseComplete).
+omitStages:
+  - RequestReceived
+rules:
+  # 1. Drop chatty control-plane / node read traffic.
+  - level: None
+    users:
+      - system:kube-scheduler
+      - system:kube-controller-manager
+      - system:apiserver
+      - system:kube-proxy
+    verbs: ["get", "list", "watch"]
+  - level: None
+    userGroups: ["system:nodes"]
+    verbs: ["get", "list", "watch"]
+  - level: None
+    resources:
+      - group: "coordination.k8s.io"
+        resources: ["leases"]
+      - group: ""
+        resources: ["events"]
+  - level: None
+    nonResourceURLs:
+      - "/healthz*"
+      - "/livez*"
+      - "/readyz*"
+      - "/version"
+      - "/metrics"
+
+  # 2. High-value: full request + response for credential-access / RBAC /
+  #    pod-create / exec — the resources Stratus's k8s techniques touch.
+  - level: RequestResponse
+    resources:
+      - group: ""
+        resources:
+          - "secrets"
+          - "serviceaccounts"
+          - "serviceaccounts/token"
+          - "pods"
+          - "pods/exec"
+          - "pods/attach"
+      - group: "rbac.authorization.k8s.io"
+        resources:
+          - "clusterroles"
+          - "clusterrolebindings"
+          - "roles"
+          - "rolebindings"
+      - group: "certificates.k8s.io"
+        resources:
+          - "certificatesigningrequests"
+          - "certificatesigningrequests/approval"
+      - group: "authentication.k8s.io"
+        resources:
+          - "tokenreviews"
+
+  # 3. Everything else: metadata only.
+  - level: Metadata

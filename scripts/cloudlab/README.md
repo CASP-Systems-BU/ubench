@@ -180,11 +180,16 @@ CloudLab specifics baked into the install:
   existing ufw rules need no change.
 - **kube-proxy is kept** (`kubeProxyReplacement=false`) for a drop-in swap.
 
-> L7 visibility (HTTP/DNS *contents*) needs an explicit Hubble L7 policy or a
-> `proxy-visibility` annotation, and would overlap with Istio's Envoy sidecars.
-> By design we let Istio own L7 and use Cilium for what only it can see — L3/L4
-> flows, DNS lookups, and packet drops. `flows.jsonl` always has the L3/L4 graph;
-> per-request HTTP semantics live in `istio/access_logs/`.
+> **L7 split:** Istio owns **HTTP** (per-request semantics in
+> `istio/access_logs/`) — we do *not* enable Cilium HTTP visibility, which would
+> just duplicate Envoy and add proxy overhead. Cilium owns what only it can see:
+> L3/L4 flows, packet drops, and **DNS**. DNS *names* (which host each pod
+> resolved) need an L7 rule, so `after_join.sh` applies a cluster-wide,
+> **observation-only** `CiliumClusterwideNetworkPolicy` (`dns-visibility`,
+> canonical copy at `k8s/cilium/dns-visibility.yaml`) that routes port-53 through
+> Cilium's DNS proxy. `enableDefaultDeny:false` makes it purely additive — it
+> never drops traffic. Result: `flows.jsonl` keeps the full L3/L4 graph and now
+> also carries `l7.dns` events, and per-run `dns.jsonl` lists the resolved names.
 
 Query flows live on the control node:
 ```bash
@@ -192,3 +197,20 @@ cilium hubble port-forward &
 hubble observe --follow                       # live flow stream
 hubble observe --verdict DROPPED              # just denied traffic
 ```
+
+## Red-team attack simulation + labeled capture
+
+To capture **labeled** benign+malicious data (an injected adversary on top of the
+normal metric bundle), use the Stratus Red Team integration:
+
+```bash
+./enable_audit.sh enable        # one-time: turn on the kube-apiserver audit log (reversible)
+./attack.sh boutique            # benign load + a control-plane attack, captured + labeled
+```
+
+This deploys the app, drives benign `wrk` load, detonates a Stratus Red Team
+Kubernetes technique mid-window, captures the full bundle **plus** the audit log
+(`audit/`) and ground truth (`attack/`), and labels every audit event / network
+flow benign|malicious. See [`RED_TEAM.md`](../../RED_TEAM.md) for the full guide,
+the technique catalog, the labeling rules, and an honest fit assessment
+(Stratus emulates *control-plane* attacks; the signal lives in the audit log).

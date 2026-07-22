@@ -302,11 +302,32 @@ def _flow_endpoint_label(ep):
     return "unknown"
 
 
-def collect_cilium(out_dir, flows_path):
+def _flow_epoch(flow):
+    """Epoch seconds for a Hubble flow's RFC3339 'time' (nanosecond precision,
+    trailing Z), or None if unparseable. fromisoformat only takes 3/6 fractional
+    digits, so truncate the nanoseconds to microseconds first."""
+    ts = flow.get("time") or ""
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    if "." in ts:
+        head, _, tail = ts.partition(".")
+        frac, sign, off = tail.partition("+") if "+" in tail else (tail, "", "")
+        ts = f"{head}.{frac[:6]}{sign}{off}"
+    try:
+        return datetime.datetime.fromisoformat(ts).timestamp()
+    except ValueError:
+        return None
+
+
+def collect_cilium(out_dir, flows_path, start=None, end=None):
     """Post-process the live-captured Hubble flows (flows.jsonl, written by
     run_and_collect.sh) into a network call graph + DNS slice, and snapshot the
     Hubble Prometheus metrics. The flow log is the L3/L4 (and DNS) analog to the
-    Istio Envoy access logs; edges.json is the network analog to istio/edges.json."""
+    Istio Envoy access logs; edges.json is the network analog to istio/edges.json.
+
+    flows.jsonl is the raw live capture (spans the whole run, setup included);
+    the derived edges/dns are scoped to [start,end] (the wrk window) when given,
+    so they match the Istio metrics and Envoy access logs."""
     os.makedirs(out_dir, exist_ok=True)
 
     # Hubble metrics endpoint (raw Prometheus text on :9965). Snapshot via a
@@ -344,7 +365,8 @@ def collect_cilium(out_dir, flows_path):
         return
     edges = {}        # (src, dst, dport, verdict) -> count
     dns_lines = []
-    n = 0
+    n = 0              # flows in window (aggregated)
+    n_total = 0        # flows in the raw capture (whole run)
     with open(flows_path) as f:
         for line in f:
             line = line.strip()
@@ -355,6 +377,13 @@ def collect_cilium(out_dir, flows_path):
             except json.JSONDecodeError:
                 continue
             flow = obj.get("flow", obj)
+            n_total += 1
+            # Scope to the wrk window, mirroring the Istio query / access-log
+            # filter. Flows without a parseable timestamp are kept (fail-open).
+            if start is not None and end is not None:
+                e = _flow_epoch(flow)
+                if e is not None and not (start <= e <= end):
+                    continue
             n += 1
             src = _flow_endpoint_label(flow.get("source"))
             dst = _flow_endpoint_label(flow.get("destination"))
@@ -375,11 +404,111 @@ def collect_cilium(out_dir, flows_path):
                  for (s, d, p, v), c in
                  sorted(edges.items(), key=lambda kv: -kv[1])]
     dump(os.path.join(out_dir, "edges.json"),
-         {"total_flows": n, "edges": edge_list})
+         {"total_flows": n, "captured_flows": n_total, "edges": edge_list})
     with open(os.path.join(out_dir, "dns.jsonl"), "w") as f:
         f.write("\n".join(dns_lines))
-    print(f"[collect_metrics] cilium: {n} flows -> {len(edge_list)} edges, "
-          f"{len(dns_lines)} dns")
+    print(f"[collect_metrics] cilium: {n}/{n_total} flows in window -> "
+          f"{len(edge_list)} edges, {len(dns_lines)} dns")
+
+
+def _audit_event_epoch(ev):
+    """Epoch seconds for an audit event's stageTimestamp (RFC3339, micros + Z),
+    or None if unparseable. fromisoformat handles 3/6 fractional digits."""
+    ts = ev.get("stageTimestamp") or ev.get("requestReceivedTimestamp") or ""
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    if "." in ts:
+        head, _, tail = ts.partition(".")
+        frac, sign, off = tail.partition("+") if "+" in tail else (tail, "", "")
+        ts = f"{head}.{frac[:6]}{sign}{off}"
+    try:
+        return datetime.datetime.fromisoformat(ts).timestamp()
+    except ValueError:
+        return None
+
+
+# Resources whose access is a high-value control-plane attack signal (mirrors the
+# RequestResponse rules in cloudlab/audit-policy.yaml).
+_SENSITIVE = {
+    ("", "secrets"), ("", "serviceaccounts"), ("", "serviceaccounts/token"),
+    ("", "pods"), ("", "pods/exec"), ("", "pods/attach"),
+    ("rbac.authorization.k8s.io", "clusterroles"),
+    ("rbac.authorization.k8s.io", "clusterrolebindings"),
+    ("rbac.authorization.k8s.io", "roles"),
+    ("rbac.authorization.k8s.io", "rolebindings"),
+    ("certificates.k8s.io", "certificatesigningrequests"),
+    ("authentication.k8s.io", "tokenreviews"),
+}
+
+
+def collect_audit(out_dir, audit_glob, start, end):
+    """Slice the kube-apiserver audit log to the run window and summarize.
+
+    The audit log is the control-plane provenance trace — the API-server analog
+    to the Envoy access logs (which are L7 app requests) and the Hubble flows
+    (L3/L4). It is where control-plane attacks (Stratus Red Team's k8s techniques:
+    dump all secrets, create a privileged pod, create an admin clusterrole, ...)
+    are unambiguous. Root-owned on the control node, so read via sudo. Each line
+    is one JSON audit event; keep those whose stageTimestamp is in [start,end]."""
+    os.makedirs(out_dir, exist_ok=True)
+    # Concatenate the current log + any rotations, then window-filter (a long run
+    # could rotate at audit-log-maxsize). Single sudo sh -c over the glob.
+    p = subprocess.run(
+        ["sudo", "sh", "-c", f"cat {audit_glob} 2>/dev/null"],
+        text=True, capture_output=True)
+    if p.returncode != 0 or not p.stdout:
+        with open(os.path.join(out_dir, "_README.txt"), "w") as f:
+            f.write("No audit log found. Enable with scripts/cloudlab/enable_audit.sh\n")
+        print("[collect_metrics] WARN: audit log unreadable/empty "
+              f"({audit_glob})", file=sys.stderr)
+        return
+
+    kept = []
+    n_total = 0
+    verb_resource = {}     # "verb resource" -> count
+    by_user = {}           # username -> count
+    sensitive = []         # high-value events (full record kept in summary)
+    for line in p.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        n_total += 1
+        e = _audit_event_epoch(ev)
+        if e is not None and not (start <= e <= end):
+            continue
+        kept.append(line)
+        verb = ev.get("verb", "?")
+        o = ev.get("objectRef", {}) or {}
+        grp, res = o.get("apiGroup", ""), o.get("resource", "?")
+        user = (ev.get("user", {}) or {}).get("username", "?")
+        verb_resource[f"{verb} {res}"] = verb_resource.get(f"{verb} {res}", 0) + 1
+        by_user[user] = by_user.get(user, 0) + 1
+        if (grp, res) in _SENSITIVE and verb not in ("get", "watch"):
+            sensitive.append({
+                "ts": ev.get("stageTimestamp"), "verb": verb,
+                "apiGroup": grp, "resource": res,
+                "namespace": o.get("namespace", ""), "name": o.get("name", ""),
+                "user": user,
+                "code": (ev.get("responseStatus", {}) or {}).get("code"),
+                "sourceIPs": ev.get("sourceIPs", []),
+            })
+
+    with open(os.path.join(out_dir, "events.jsonl"), "w") as f:
+        f.write("\n".join(kept))
+    dump(os.path.join(out_dir, "summary.json"), {
+        "events_in_window": len(kept),
+        "events_total_in_log": n_total,
+        "by_verb_resource": dict(sorted(verb_resource.items(),
+                                        key=lambda kv: -kv[1])),
+        "by_user": dict(sorted(by_user.items(), key=lambda kv: -kv[1])),
+        "sensitive_events": sensitive,
+    })
+    print(f"[collect_metrics] audit: {len(kept)}/{n_total} events in window -> "
+          f"{len(sensitive)} sensitive (secrets/sa/rbac/pod-write)")
 
 
 def main():
@@ -389,6 +518,10 @@ def main():
     ap.add_argument("--end", type=int, required=True, help="window end, epoch s")
     ap.add_argument("--start-iso", required=True, help="window start, RFC3339 (for logs)")
     ap.add_argument("--step", default="15s", help="time-series step (default 15s)")
+    ap.add_argument("--audit-log", default=None,
+                    help="kube-apiserver audit log glob to slice to the window "
+                         "(e.g. '/var/log/kubernetes/audit/*.log'). Opt-in: only "
+                         "passed by the attack harness. Read via sudo.")
     args = ap.parse_args()
 
     # Istio and Cilium are independent sources; collect whichever is present.
@@ -425,10 +558,20 @@ def main():
     if cilium_present():
         cilium_dir = os.path.join(args.dir, "cilium")
         print("[collect_metrics] processing Cilium/Hubble flows + metrics")
-        collect_cilium(cilium_dir, os.path.join(cilium_dir, "flows.jsonl"))
+        collect_cilium(cilium_dir, os.path.join(cilium_dir, "flows.jsonl"),
+                       start=args.start, end=args.end)
         print(f"[collect_metrics] done -> {cilium_dir}")
     else:
         print("[collect_metrics] no cilium DaemonSet; skipping Cilium collection")
+
+    # Audit log (control-plane provenance) — opt-in via --audit-log, used by the
+    # attack harness. The Istio/Cilium sources see app + pod network traffic; the
+    # audit log is the only place control-plane (K8s-API) attacks are legible.
+    if args.audit_log:
+        audit_dir = os.path.join(args.dir, "audit")
+        print("[collect_metrics] slicing kube-apiserver audit log to window")
+        collect_audit(audit_dir, args.audit_log, args.start, args.end)
+        print(f"[collect_metrics] done -> {audit_dir}")
 
     return 0
 
