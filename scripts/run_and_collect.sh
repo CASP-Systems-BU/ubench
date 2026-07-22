@@ -34,10 +34,19 @@ duration="${5:-30}"
 RESULTS_ROOT="${RESULTS_ROOT:-$HOME/ubench/results}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d-%H%M%S)}"
 DIR="${RESULTS_ROOT}/${bench}-${request}_${RUN_ID}"
-mkdir -p "${DIR}/istio/access_logs" "${DIR}/cilium"
+mkdir -p "${DIR}/istio/access_logs" "${DIR}/cilium" "${DIR}/k8s_snapshot"
 
 START_EPOCH="$(date -u +%s)"
 START_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# K8s entity snapshot at run start — the GNN pipeline's entity table (pod IPs,
+# ownerReferences chains, service endpoints, node placement). collect_metrics.py
+# writes a matching objects_end.json at collection time to catch mid-run churn.
+kubectl get pods,services,endpoints,deployments,replicasets,statefulsets,daemonsets \
+	-A -o json > "${DIR}/k8s_snapshot/objects.json" 2>/dev/null \
+	|| echo "[run_and_collect] WARN: k8s object snapshot failed"
+kubectl get nodes -o json > "${DIR}/k8s_snapshot/nodes.json" 2>/dev/null \
+	|| echo "[run_and_collect] WARN: k8s node snapshot failed"
 
 # Background resource sampler: per-pod CPU/mem every 5s. metrics-server is the
 # only resource source here (the Istio Prometheus does not scrape cAdvisor), so
@@ -99,6 +108,8 @@ ISTIO_ON=false
 kubectl get ns istio-system >/dev/null 2>&1 && ISTIO_ON=true
 CILIUM_ON=false
 kubectl -n kube-system get ds cilium >/dev/null 2>&1 && CILIUM_ON=true
+AUDIT_ON=false
+sudo test -s /var/log/kubernetes/audit/audit.log 2>/dev/null && AUDIT_ON=true
 
 cat > "${DIR}/meta.json" <<JSON
 {
@@ -114,6 +125,7 @@ cat > "${DIR}/meta.json" <<JSON
   "end_iso": "${END_ISO}",
   "istio_enabled": ${ISTIO_ON},
   "cilium_enabled": ${CILIUM_ON},
+  "audit_enabled": ${AUDIT_ON},
   "run_status": ${STATUS}
 }
 JSON
