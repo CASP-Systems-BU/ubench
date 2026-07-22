@@ -28,19 +28,25 @@ echo "[enable_istio_metrics] Waiting for nodes to be Ready..."
 kubectl wait --for=condition=Ready nodes --all --timeout=180s || \
     echo "[enable_istio_metrics] WARN: not all nodes Ready, continuing anyway"
 
-# 1. Control plane.
-if ! kubectl get namespace istio-system >/dev/null 2>&1; then
-    if ! command -v istioctl >/dev/null 2>&1; then
-        echo "[enable_istio_metrics] Downloading Istio $ISTIO_VERSION"
-        curl -L https://istio.io/downloadIstio | ISTIO_VERSION="$ISTIO_VERSION" sh -
-        istio_dir=$(ls -d istio-"$ISTIO_VERSION" 2>/dev/null || ls -d istio-*)
-        sudo mv "$istio_dir"/bin/istioctl /usr/local/bin
-    fi
-    echo "[enable_istio_metrics] Installing Istio control plane (profile=demo)"
-    istioctl install --set profile=demo -y
-else
-    echo "[enable_istio_metrics] istio-system already present, skipping control-plane install"
+# 1. Control plane. `istioctl install` is reconciling/idempotent, so it runs
+#    unconditionally: on a fresh cluster it installs, on an existing one it
+#    applies config drift (e.g. switching access logs to JSON encoding — the
+#    setting is pushed to sidecars via xDS, no pod restarts needed). Only the
+#    istioctl download itself is gated.
+#    JSON access logs give the GNN ingest pipeline a stable per-request record
+#    (start_time, method, path, response_code, upstream_cluster, x-request-id)
+#    instead of the fragile default text format.
+if ! command -v istioctl >/dev/null 2>&1; then
+    echo "[enable_istio_metrics] Downloading Istio $ISTIO_VERSION"
+    curl -L https://istio.io/downloadIstio | ISTIO_VERSION="$ISTIO_VERSION" sh -
+    istio_dir=$(ls -d istio-"$ISTIO_VERSION" 2>/dev/null || ls -d istio-*)
+    sudo mv "$istio_dir"/bin/istioctl /usr/local/bin
 fi
+echo "[enable_istio_metrics] Installing/reconciling Istio (profile=demo, JSON access logs)"
+istioctl install --set profile=demo \
+    --set meshConfig.accessLogFile=/dev/stdout \
+    --set meshConfig.accessLogEncoding=JSON \
+    -y
 
 # 2. Prometheus addon (+ optional dashboards).
 addon_dir=""
