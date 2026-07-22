@@ -9,5 +9,6 @@
         "10.0.0.105"
     ],
     "nodes_home": "/users/yuhang",
-    "enable_istio_metrics": true
+    "enable_istio_metrics": true,
+    "enable_audit_log": true
 }

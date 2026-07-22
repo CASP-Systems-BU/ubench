@@ -15,6 +15,9 @@
 #   Usage:
 #     ./bootstrap.sh            # kube setup, then secure (default)
 #     ./bootstrap.sh kube       # only copy + run setup_kube.py
+#     ./bootstrap.sh addons     # only the config.json-gated add-ons
+#                                 (enable_audit_log, enable_istio_metrics) —
+#                                 safe on a live, already-initialized cluster
 #     ./bootstrap.sh secure     # only apply firewall + SSH hardening
 #                                 (alias: `firewall`)
 #
@@ -109,24 +112,35 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-setup_kube() {
+copy_scripts() {
 	echo "[*] Copying setup scripts to main node (${MAIN})..."
 	ssh "${SSH_OPTS[@]}" "${USER}@${MAIN}" "mkdir -p ~/ubench/scripts/cloudlab"
 	scp "${SSH_OPTS[@]}" \
 		"${SCRIPT_DIR}"/*.py "${SCRIPT_DIR}"/*.sh "${SCRIPT_DIR}"/config.json \
 		"${USER}@${MAIN}:~/ubench/scripts/cloudlab/"
-
-	echo "[*] Running setup_kube.py on main node (-A forwards your key to reach workers)..."
-	ssh -A "${SSH_OPTS[@]}" "${USER}@${MAIN}" \
-		"cd ~/ubench/scripts/cloudlab && python3 setup_kube.py"
 }
+
+run_setup_kube() {
+	echo "[*] Running setup_kube.py $1 on main node (-A forwards your key to reach workers)..."
+	ssh -A "${SSH_OPTS[@]}" "${USER}@${MAIN}" \
+		"cd ~/ubench/scripts/cloudlab && python3 setup_kube.py $1"
+}
+
+setup_kube()   { copy_scripts; run_setup_kube ""; }
+
+# Apply only the config.json-gated add-ons (enable_audit_log,
+# enable_istio_metrics) to an ALREADY-initialized cluster. Full `kube` setup
+# can't re-run there (kubeadm init fails on an initialized cluster); this is
+# the supported way to roll out new gates without re-provisioning.
+setup_addons() { copy_scripts; run_setup_kube "--addons-only"; }
 
 # ---------------------------------------------------------------------------
 case "${1:-all}" in
 	kube)            setup_kube ;;
+	addons)          setup_addons ;;
 	secure|firewall) setup_secure ;;
 	all)             setup_kube; setup_secure ;;
-	*) echo "usage: $0 [kube|secure|all]" >&2; exit 1 ;;
+	*) echo "usage: $0 [kube|addons|secure|all]" >&2; exit 1 ;;
 esac
 
 echo "[*] Done."
