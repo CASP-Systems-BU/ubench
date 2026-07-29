@@ -67,22 +67,38 @@ into a single self-contained directory on the control node and then copies it
 back to the host under `results/<bench>-<request>_<UTC-timestamp>/`:
 
 ```
-meta.json          run params + time window + istio/cilium on/off
+meta.json          run params + time window + istio/cilium/audit on/off
 run.log            full run.sh output (wrk result, heartbeat, top snapshot)
 wrk.txt            just the wrk latency/throughput block
 resources.csv      per-pod CPU/mem time-series, sampled every 5s (metrics-server)
+k8s_snapshot/      entity snapshot for graph construction (any cluster):
+  objects.json     pods/services/endpoints/deployments/RS/STS/DS at run START
+  objects_end.json same at collection time (catches mid-run pod churn)
+  nodes.json       node objects (InternalIPs, labels)
+audit/             only when the enable_audit_log gate was applied:
+  audit.jsonl      kube-apiserver audit events (Metadata level) in the run window
 istio/             only when Istio is enabled (see below):
   requests_total.json / request_duration_ms.json / *_bytes.json
                    raw Istio counters/histograms as a 15s time-series over the run
   edges.json       source -> destination request counts for THIS run (the call graph)
   summary.json     per-service request rate / error rate / p50-p90-p99 latency
-  access_logs/*.log  Envoy per-request access logs (one structured line per request)
+  access_logs/*.log  Envoy per-request access logs (one JSON line per request;
+                   older clusters without accessLogEncoding=JSON emit text lines,
+                   both are window-filtered correctly)
 cilium/            only when Cilium is the CNI (see "Network-layer metrics"):
   flows.jsonl      Hubble network flow log, one JSON line per L3/L4 flow (streamed live)
   edges.json       src -> dst (port, verdict) flow counts — the network-level graph
   dns.jsonl        DNS flows sliced out of flows.jsonl
   hubble_metrics.prom  snapshot of Hubble's Prometheus metrics (drops, flows, DNS)
 ```
+
+> **Applying new collection gates to a live cluster**: `./bootstrap.sh addons`
+> re-copies `scripts/cloudlab/` to node-0 and runs only the config.json-gated
+> add-on steps (`enable_audit_log`, `enable_istio_metrics`) — safe on an
+> already-initialized cluster, where a full `kube` re-run would fail at
+> `kubeadm init`. The audit gate patches the kube-apiserver static-pod manifest
+> (restarting it, ~30-60s) and verifies events flow to
+> `/var/log/kubernetes/audit/audit.log`.
 
 The Istio metrics come from the in-cluster Prometheus via a temporary
 port-forward (no NodePort needed); the per-run figures use `increase()`/`rate()`

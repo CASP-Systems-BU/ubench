@@ -176,22 +176,37 @@ def _strip_cri_prefix(text):
     return "\n".join(out)
 
 
-def _envoy_line_epoch(line):
-    """Parse the leading bracketed UTC timestamp of an Envoy access-log line,
-    e.g. '[2026-06-10T08:30:37.742Z] "POST ...' -> epoch seconds. Returns None
-    for non-access lines (Envoy operational logs have no leading [..Z])."""
-    if not line.startswith("["):
+def _iso_epoch(ts):
+    """'2026-06-10T08:30:37.742Z' -> epoch seconds, or None. The Z->+00:00
+    rewrite keeps this working on the control node's py3.10 fromisoformat."""
+    if not isinstance(ts, str):
         return None
-    end = line.find("]")
-    if end < 0:
-        return None
-    ts = line[1:end]
     if ts.endswith("Z"):
         ts = ts[:-1] + "+00:00"
     try:
         return datetime.datetime.fromisoformat(ts).timestamp()
     except ValueError:
         return None
+
+
+def _envoy_line_epoch(line):
+    """Epoch seconds of an Envoy access-log line, or None for non-access lines.
+    Handles both mesh encodings:
+      JSON (accessLogEncoding=JSON): {"start_time":"2026-06-10T08:30:37.742Z",...}
+      TEXT (legacy default):         [2026-06-10T08:30:37.742Z] "POST ..."
+    Envoy operational logs match neither shape -> None (dropped by
+    _window_filter)."""
+    if line.startswith("{"):
+        try:
+            return _iso_epoch(json.loads(line).get("start_time"))
+        except json.JSONDecodeError:
+            return None
+    if not line.startswith("["):
+        return None
+    end = line.find("]")
+    if end < 0:
+        return None
+    return _iso_epoch(line[1:end])
 
 
 def _window_filter(text, start_epoch, end_epoch):
@@ -231,6 +246,71 @@ def _read_rotated_logs(node_ip, ns, pod, uid, container="istio-proxy"):
     if p.returncode != 0:
         return None
     return p.stdout
+
+
+AUDIT_DIR = "/var/log/kubernetes/audit"
+
+
+def collect_audit(out_dir, start_epoch, end_epoch, audit_dir=AUDIT_DIR):
+    """Slice the kube-apiserver audit log to this run's window ->
+    audit/audit.jsonl. This script runs ON the control node (= the apiserver
+    node), so it is a local rotation-aware read (same approach as
+    _read_rotated_logs): rotated audit-*.log(.gz) oldest->newest, then the live
+    audit.log. The dir is root-only, hence NOPASSWD sudo. Streams rather than
+    slurps — days of accumulated audit logs can be hundreds of MB. No-op when
+    the enable_audit_log gate was never applied (dir absent), so it is safe on
+    any cluster."""
+    if subprocess.run(["sudo", "test", "-d", audit_dir],
+                      capture_output=True).returncode != 0:
+        print("[collect_metrics] no audit log dir; skipping audit collection")
+        return
+    script = (
+        f'd={shlex.quote(audit_dir)}; '
+        'for f in $(ls "$d"/audit-*.log "$d"/audit-*.log.gz 2>/dev/null | sort); do '
+        'case "$f" in *.gz) zcat "$f" ;; *) cat "$f" ;; esac; done; '
+        'cat "$d"/audit.log 2>/dev/null'
+    )
+    p = subprocess.Popen(["sudo", "sh", "-c", script],
+                         stdout=subprocess.PIPE, text=True)
+    os.makedirs(out_dir, exist_ok=True)
+    kept = total = 0
+    with open(os.path.join(out_dir, "audit.jsonl"), "w") as out:
+        for ln in p.stdout:
+            ln = ln.strip()
+            if not ln:
+                continue
+            total += 1
+            try:
+                ev = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            # With omitStages: RequestReceived there is exactly one event per
+            # request; requestReceivedTimestamp is its canonical time.
+            e = _iso_epoch(ev.get("requestReceivedTimestamp")
+                           or ev.get("stageTimestamp"))
+            if e is not None and start_epoch <= e <= end_epoch:
+                out.write(ln + "\n")
+                kept += 1
+    p.wait()
+    print(f"[collect_metrics] audit: kept {kept}/{total} events in window")
+
+
+SNAPSHOT_KINDS = ("pods,services,endpoints,deployments,"
+                  "replicasets,statefulsets,daemonsets")
+
+
+def collect_k8s_snapshot(out_dir):
+    """End-of-run K8s object snapshot -> k8s_snapshot/objects_end.json.
+    run_and_collect.sh writes the start-of-run objects.json; this second
+    snapshot catches pods created/restarted mid-run. Works on any cluster."""
+    res = kubectl("get", SNAPSHOT_KINDS, "-A", "-o", "json", check=False)
+    if res.returncode != 0:
+        print("[collect_metrics] WARN: end-of-run k8s snapshot failed: "
+              + res.stderr.strip(), file=sys.stderr)
+        return
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "objects_end.json"), "w") as f:
+        f.write(res.stdout)
 
 
 def collect_access_logs(out_dir, start_iso, start_epoch, end_epoch):
@@ -390,6 +470,11 @@ def main():
     ap.add_argument("--start-iso", required=True, help="window start, RFC3339 (for logs)")
     ap.add_argument("--step", default="15s", help="time-series step (default 15s)")
     args = ap.parse_args()
+
+    # Sources that need no add-on: entity snapshot + (gated, self-skipping)
+    # audit log. Both are inputs to the GNN intrusion-detection pipeline.
+    collect_k8s_snapshot(os.path.join(args.dir, "k8s_snapshot"))
+    collect_audit(os.path.join(args.dir, "audit"), args.start, args.end)
 
     # Istio and Cilium are independent sources; collect whichever is present.
     if istio_present():

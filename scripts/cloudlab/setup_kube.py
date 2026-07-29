@@ -61,14 +61,44 @@ class KubeSetUp:
             self.shell_helper.get_home_path(istio_script_path),
         )
 
+    def enable_audit_log_on_main(self):
+        # kube-apiserver audit logging: write the audit policy and patch the
+        # static-pod manifest on the control-plane node (nodes[0] hosts the
+        # apiserver). Restarts the apiserver; the script blocks until it is
+        # back and audit events are flowing.
+        # Gated by "enable_audit_log" in config.json (default off).
+        print("[*] Enabling K8s API audit logging on main node...")
+        config = self.shell_helper.config
+        audit_script_path = "./enable_audit_log.sh"
+        self.shell_helper.copy_files_to_nodes(audit_script_path, mode=2)
+        self.shell_helper.execute_script(
+            config["nodes"][0],
+            config["nodes_user"],
+            self.shell_helper.get_home_path(audit_script_path),
+        )
+
+    def addons_setup(self):
+        # All config-gated cluster add-ons. Factored out of kube_cluster_setup
+        # so it can also run standalone against an already-initialized cluster
+        # (`./bootstrap.sh addons` -> `setup_kube.py --addons-only`).
+        # Audit before Istio: the apiserver restart finishes before istioctl
+        # talks to it, and the Istio (re)install itself gets audited.
+        if self.shell_helper.config.get("enable_audit_log", False):
+            self.enable_audit_log_on_main()
+        if self.shell_helper.config.get("enable_istio_metrics", False):
+            self.enable_istio_metrics_on_main()
+
     def kube_cluster_setup(self):
         self.environment_setup()
         join_command = self.init_kubernetes_on_main()
         self.join_workers_to_cluster(join_command)
-        if self.shell_helper.config.get("enable_istio_metrics", False):
-            self.enable_istio_metrics_on_main()
+        self.addons_setup()
 
 if __name__ == "__main__":
+    import sys
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     kube_setup = KubeSetUp("./config.json")
-    kube_setup.kube_cluster_setup()
+    if "--addons-only" in sys.argv[1:]:
+        kube_setup.addons_setup()
+    else:
+        kube_setup.kube_cluster_setup()
