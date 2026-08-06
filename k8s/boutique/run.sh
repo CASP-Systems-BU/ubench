@@ -2,4 +2,5 @@
 
 cd $(dirname $0)
 
-bash ../../scripts/run.sh boutique mix 4 16 30
+# <bench> <request> <threads> <conns> <total_s> <rate>
+bash ../../scripts/run.sh boutique mix 4 16 60 1000
