@@ -3,3 +3,4 @@ __pycache__
 results/
 scripts/*/join_kube.sh
 .vscode
+build/

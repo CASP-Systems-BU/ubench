@@ -1,0 +1,5 @@
+# Benchmark metadata consumed by scripts/render_manifests.py.
+entry_service: service0
+default_request: endpoint1   # URL path on service0, not a Lua script
+kind: synthetic
+synthetic_topology: chain-d2 # gen_processing_time.py key for ${PROCESSING_TIME_*}

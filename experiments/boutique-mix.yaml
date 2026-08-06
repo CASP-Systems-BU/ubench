@@ -1,0 +1,14 @@
+# Baseline boutique data-collection experiment: one continuous hour of the mix
+# workload at a fixed 1000 req/s, harvested into 6 x 10min run dirs. Mirrors the
+# historical 6 x 180s manual runs, but as a single uninterrupted load.
+benchmark: boutique
+request: mix
+workers: 4
+replicas:
+  default: 1
+load:
+  threads: 4
+  conns: 16
+  rate: 1000
+total_duration_s: 3600
+segment_s: 600

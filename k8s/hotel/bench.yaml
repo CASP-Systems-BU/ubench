@@ -1,0 +1,4 @@
+# Benchmark metadata consumed by scripts/render_manifests.py.
+entry_service: frontend
+default_request: mix
+kind: proxy                  # wrk2 -> rust proxy (client pod :3000) -> services

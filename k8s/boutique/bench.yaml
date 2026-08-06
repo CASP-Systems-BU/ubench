@@ -1,0 +1,20 @@
+# Benchmark metadata consumed by scripts/render_manifests.py.
+entry_service: frontend      # wrk entry point; home node-1, first in round-robin
+default_request: mix         # client/lua/<request>.lua
+kind: wrk-lua                # wrk2 drives the frontend Service directly via Lua
+
+# The checked-in n=4 layout predates the round-robin rule (it is a block
+# layout: 2/3 services per node). Pinned verbatim so the default 4-worker
+# placement — and therefore telemetry comparability with historical runs —
+# never changes. Any other worker count falls back to the rule.
+pinned_layouts:
+  "4":
+    frontend: 1
+    cart: 2
+    checkout: 2
+    currency: 2
+    email: 3
+    payment: 3
+    productcatalog: 4
+    recommendations: 4
+    shipping: 4

@@ -1,0 +1,14 @@
+# Synthetic 10-service chain (chain-d8 topology) at a modest fixed rate.
+# `request` is the URL path on service0, not a Lua script.
+benchmark: chain-d8-http-sync
+request: endpoint1
+workers: 4
+replicas:
+  default: 1
+load:
+  threads: 4
+  conns: 16
+  rate: 500
+total_duration_s: 1800
+segment_s: 600
+seed: 42
