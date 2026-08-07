@@ -123,11 +123,13 @@ client_pod() { kubectl get pod 2>/dev/null | grep ubuntu-client- | cut -f 1 -d "
 # answer means UNKNOWN, which callers never treat as dead.
 #   echoes: "done <rc>" | "running" | "absent" | "unknown"
 wrk_state() {
+	# Process liveness via /proc, not pgrep (procps isn't in every client
+	# image). The [/] bracket keeps the probe from matching its own cmdline.
 	local pod out
 	pod="$(client_pod)"
 	[ -z "${pod}" ] && { echo "unknown"; return; }
 	out="$(kubectl exec "${pod}" -- sh -c \
-		'if [ -f /tmp/wrk.rc ]; then echo "done $(cat /tmp/wrk.rc)"; elif pgrep -f /wrk2/wrk >/dev/null 2>&1; then echo running; else echo absent; fi' \
+		'if [ -f /tmp/wrk.rc ]; then echo "done $(cat /tmp/wrk.rc)"; elif grep -aq "[/]wrk2/wrk" /proc/[0-9]*/cmdline 2>/dev/null; then echo running; else echo absent; fi' \
 		2>/dev/null)"
 	[ -z "${out}" ] && echo "unknown" || echo "${out}"
 }
@@ -317,7 +319,8 @@ while [[ -z "${WRK_RC}" && "${LOAD_STATE}" != "dead" ]]; do
 	if [[ "$(date -u +%s)" -gt "${DEADLINE}" ]]; then
 		echo "[run_and_collect] WARN: wrk2 still running past its deadline; killing it"
 		CLIENT="$(client_pod)"
-		[ -n "${CLIENT}" ] && kubectl exec "${CLIENT}" -- pkill -f '/wrk2/wrk' 2>/dev/null
+		[ -n "${CLIENT}" ] && kubectl exec "${CLIENT}" -- sh -c \
+			'kill $(grep -la "[/]wrk2/wrk" /proc/[0-9]*/cmdline 2>/dev/null | cut -d/ -f3)' 2>/dev/null
 		break
 	fi
 	sleep 10

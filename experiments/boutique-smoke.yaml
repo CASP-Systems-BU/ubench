@@ -1,0 +1,15 @@
+# Small end-to-end smoke experiment: 3 minutes of continuous load at a
+# conservative 500 req/s, harvested as 3 x 60s segments. Validates the whole
+# pipeline (render -> deploy -> segmented collection -> ingest) on a fresh
+# cluster without committing hours.
+benchmark: boutique
+request: mix
+workers: 4
+replicas:
+  default: 1
+load:
+  threads: 4
+  conns: 16
+  rate: 500
+total_duration_s: 180
+segment_s: 60

@@ -184,7 +184,7 @@ start_load() {
             kubectl exec $ubuntu_client -- cat /tmp/wrk.log
             return 1
         fi
-    elif ! kubectl exec $ubuntu_client -- pgrep -f '/wrk2/wrk' >/dev/null 2>&1; then
+    elif ! kubectl exec $ubuntu_client -- sh -c 'grep -aq "[/]wrk2/wrk" /proc/[0-9]*/cmdline 2>/dev/null'; then
         echo "[run.sh] wrk2 did not start:"
         kubectl exec $ubuntu_client -- cat /tmp/wrk.log 2>/dev/null
         return 1
