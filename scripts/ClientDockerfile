@@ -1,4 +1,11 @@
-FROM ubuntu:latest
+# Load-generator client image: wrk2 (open-loop, -R rate-controlled) + the rust
+# request-mix proxy. Build context is client/ — see scripts/BUILD.md.
+#
+# Everything is pinned: base by tag, sources by commit SHA (override with
+# --build-arg to bump). The Lua request mixes are NOT baked in — they live in
+# client/lua/ and reach the pod via the wrk-scripts ConfigMap (run.sh), so a
+# mix edit never needs an image rebuild.
+FROM ubuntu:24.04
 
 # Set non-interactive mode to avoid user prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -6,21 +13,19 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install necessary packages
 RUN apt-get -y update && \
     apt-get -y upgrade && \
-    apt-get -y install dnsutils git vim python3 python3-aiohttp libssl-dev libz-dev luarocks iputils-ping lynx build-essential gcc bash curl cargo && \
+    apt-get -y install dnsutils git vim python3 python3-aiohttp libssl-dev libz-dev luarocks iputils-ping lynx build-essential gcc bash curl cargo procps && \
     luarocks install luasocket
 
-# Clone and build wrk2
-RUN git clone https://github.com/yizhengx/wrk2.git && \
-    cd wrk2 && \
-    make && \
-    cd /
-
-# Clone and build wrk (mucache branch)
-RUN git clone https://github.com/yizhengx/wrk.git && \
-    cd wrk && \
-    git checkout mucache && \
-    make && \
-    cd /
+# wrk2: canonical upstream (giltene), frozen since 2019 — the SHA below is
+# HEAD as of 2026-08 and is not expected to move. Known-good fallback if this
+# base image ever refuses to build it: the yizhengx/wrk2 fork @ 64a5c2f
+# (same engine + bundled scripts, minus two stdout summary rows).
+ARG WRK2_REPO=https://github.com/giltene/wrk2.git
+ARG WRK2_SHA=44a94c17d8e6a0bac8559b53da76848e430cb7a7
+RUN git clone ${WRK2_REPO} /wrk2 && \
+    cd /wrk2 && \
+    git checkout ${WRK2_SHA} && \
+    make
 
 COPY ./proxy /mucache/proxy
 

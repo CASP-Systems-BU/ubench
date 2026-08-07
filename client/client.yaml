@@ -6,17 +6,24 @@ metadata:
   labels:
     app: ubuntu-client
 spec:
+  # Exactly one replica, by design: two wrk2 processes would double the offered
+  # rate and their latency histograms cannot be merged. Scale the cluster, not
+  # the client.
   replicas: 1
   selector:
     matchLabels:
       app: ubuntu-client
   template:
     metadata:
-      labels: 
+      labels:
         app: ubuntu-client
       name: ubuntu-client
       annotations:
         sidecar.istio.io/inject: "false"
+        # Hash of client/lua/* (substituted by run.sh): an edited request mix
+        # changes the template and forces a rollout, so /lua is guaranteed
+        # fresh before wrk2 reads it (mounted ConfigMaps propagate lazily).
+        ubench.io/lua-checksum: "${LUA_HASH}"
     spec:
       # Pinned to the ingress node so the client->frontend path (and thus the
       # ingress flow topology) is identical on every run. node-index 1 always
@@ -25,9 +32,26 @@ spec:
         ubench.io/node-index: "1"
       containers:
       - name: hr-client
-        image: yizhengx/mucache:client
-        # resources:
-        #   requests:
-        #     cpu: $CLIENT_CPU_QUOTA
-        #     memory: 4Gi
-        imagePullPolicy: Always
+        # Substituted by run.sh (envsubst restricted to this one var).
+        image: ${CLIENT_IMAGE}
+        # CPU requests without limits: wrk2's open-loop pacing sleeps until
+        # each scheduled send time, and CFS-quota throttling would delay those
+        # wakeups — showing up as fake server-side latency. Requests give the
+        # scheduler honest accounting; no limit means no throttle.
+        resources:
+          requests:
+            cpu: "4"
+            memory: 4Gi
+        # Tags are immutable (see scripts/BUILD.md), so IfNotPresent is safe
+        # and avoids a registry round-trip on every pod restart.
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: wrk-scripts
+          mountPath: /lua
+          readOnly: true
+      volumes:
+      # client/lua/*.lua, applied as a ConfigMap by run.sh each run — edit a
+      # request mix and re-run; no image rebuild.
+      - name: wrk-scripts
+        configMap:
+          name: wrk-scripts
