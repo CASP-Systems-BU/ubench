@@ -28,9 +28,13 @@
 #
 set -euo pipefail
 
-USER="yuhang"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ssh user: config.json `nodes_user` is the single source of truth
+# (register_cluster.py writes it); SSH_USER env overrides.
+CFG_USER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["nodes_user"])' \
+	"${SCRIPT_DIR}/config.json" 2>/dev/null || true)"
+USER="${SSH_USER:-${CFG_USER:-yuhang}}"
 
 # Public CloudLab hostnames live in nodes.sh (node-0 first = control plane).
 source "${SCRIPT_DIR}/nodes.sh"
