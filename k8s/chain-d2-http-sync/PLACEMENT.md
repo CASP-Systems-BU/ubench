@@ -10,7 +10,8 @@ use `kubernetes.io/hostname`) is documented once in
 [../boutique/PLACEMENT.md](../boutique/PLACEMENT.md). This file only records the
 mapping for `chain-d2-http-sync`.
 
-node-0 is the tainted control plane, so only worker indices 1-4 are used. The
+node-0 is the tainted control plane, so only worker indices 1..workers
+(default 4) are used. The
 client (`ubuntu-client`, pinned in `client/client.yaml`) always runs on node-1;
 `service0` (the wrk entry point) is co-located there so the ingress hop is
 intra-node and every entry->backend call crosses the overlay.
@@ -24,12 +25,16 @@ intra-node and every entry->backend call crosses the overlay.
 | 3 | node-3 | `service2` |
 
 Assignment rule: services in file order, round-robin across worker node-index
-1->4, with the entry service placed on node-1.
+1->workers, with the entry service placed on node-1. The table shows the
+default workers=4 layout; scripts/render_manifests.py generalizes it to any
+worker count, and `replicas.overrides` in an experiment spec expands a service
+into per-replica pinned Deployments (see ../boutique/PLACEMENT.md).
 
 ## Changing / verifying
 
-Edit the `nodeSelector` value in `yamls/<service>.yaml`, then re-run
-`./deploy.sh chain-d2-http-sync`. Check actual placement with:
+Set `workers:` / `replicas:` in an experiment spec (`experiments/*.yaml`)
+and re-deploy — placement is rendered, not hand-edited (see
+../boutique/PLACEMENT.md). Check actual placement with:
 
 ```
 kubectl get pods -o wide

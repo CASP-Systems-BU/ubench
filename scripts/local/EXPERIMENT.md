@@ -56,15 +56,24 @@ and (b) NOPASSWD sudo.
    This installs `sshpass`, generates a passphrase-less key, pushes it to all 5
    nodes, sets NOPASSWD sudo, and verifies `sudo whoami == root` on each.
 
-3. (Recommended) Give each node a **unique hostname** — kubeadm uses the hostname
-   as the node name and they must be unique:
+3. **Give each node a `node-<N>` hostname** — kubeadm uses the hostname as the
+   node name (must be unique), and `deploy.sh` derives the placement labels
+   (`ubench.io/node-index=<N>`) from the `node-<N>` prefix, failing fast when
+   they're missing. Control node = `node-0`:
    ```bash
-   # example: k8s0..k8s4, control node first
-   ssh vm@10.0.0.48  'sudo hostnamectl set-hostname k8s0'
-   ssh vm@10.0.0.221 'sudo hostnamectl set-hostname k8s1'
-   ssh vm@10.0.0.160 'sudo hostnamectl set-hostname k8s2'
-   ssh vm@10.0.0.235 'sudo hostnamectl set-hostname k8s3'
-   ssh vm@10.0.0.154 'sudo hostnamectl set-hostname k8s4'
+   ssh vm@10.0.0.48  'sudo hostnamectl set-hostname node-0'
+   ssh vm@10.0.0.221 'sudo hostnamectl set-hostname node-1'
+   ssh vm@10.0.0.160 'sudo hostnamectl set-hostname node-2'
+   ssh vm@10.0.0.235 'sudo hostnamectl set-hostname node-3'
+   ssh vm@10.0.0.154 'sudo hostnamectl set-hostname node-4'
+   ```
+   If your nodes already have other names (e.g. `k8s0..k8s4`), label the
+   workers by hand instead — the benchmark manifests and `client/client.yaml`
+   hard-require these labels:
+   ```bash
+   for i in 1 2 3 4; do
+     ssh vm@10.0.0.48 "kubectl label node k8s$i ubench.io/node-index=$i --overwrite"
+   done
    ```
 
 4. (Recommended) Disable unattended-upgrades on all nodes so it does not grab the
@@ -134,49 +143,55 @@ cd /home/pentium3/Desktop/ubench
 CONTROL_HOST=10.0.0.48 SSH_USER=vm ./scripts/cloudlab/deploy.sh boutique
 ```
 
-> **Expected with Istio:** the final "heartbeat sweep" prints `[FAIL]` for every
-> service and `deploy.sh` exits non-zero. This is **not** a real failure — the
-> sweep uses a raw `echo | nc` HTTP request, which Istio's Envoy sidecar rejects.
-> The services are deployed fine. Confirm with:
+> **With Istio:** the heartbeat sweep and run.sh's connectivity gate use a real
+> HTTP client (wget), which works through the Envoy sidecar — `deploy.sh --run`
+> is fine under Istio. Each boutique pod should be **`2/2 Running`** (app
+> container + injected Envoy sidecar); confirm with:
 > ```bash
 > ssh vm@10.0.0.48 kubectl get pods -o wide
 > ```
-> Each boutique pod should be **`2/2 Running`** (app container + injected Envoy
-> sidecar) and spread across the workers (the control node is tainted).
-
-Do **not** use `deploy.sh --run` under Istio: `--run` calls `scripts/run.sh`,
-whose connectivity gate uses the same `nc` heartbeat and loops forever. Use the
-manual `wrk` run in the next step instead.
 
 ---
 
-## 4. Run the load (wrk)
+## 4. Run the load (wrk2)
 
-The load generator is the `ubuntu-client` pod (image `yizhengx/mucache:client`,
-which bundles `wrk` + the boutique `mix.lua` script). It is deployed with
-`sidecar.istio.io/inject: "false"`, so the client itself stays out of the mesh and
-does not pollute the measurement.
+The load generator is the `ubuntu-client` pod (the pinned image from
+`scripts/BUILD.md`, bundling **wrk2** + the rust request-mix proxy; the boutique
+Lua mixes come from `client/lua/` via the `wrk-scripts` ConfigMap). It is
+deployed with `sidecar.istio.io/inject: "false"`, so the client itself stays out
+of the mesh and does not pollute the measurement.
+
+wrk2 is **open-loop**: `-R` sets a required request rate that is offered no
+matter how the cluster responds (real users don't slow down because the server
+did), and latency is measured from each request's *scheduled* send time —
+coordinated-omission-corrected, so tails are honest. Consequences: numbers are
+NOT comparable with old closed-loop `wrk` runs; the first ~10s of a run is
+calibration (keep runs ≥ 60s); and a rate above the saturation knee measures the
+backlog, not the services (sweep procedure: `experiments/README.md`).
 
 ```bash
 cd /home/pentium3/Desktop/ubench
-scp client/client.yaml vm@10.0.0.48:~/client.yaml
+scp -r client vm@10.0.0.48:~/client
 ssh vm@10.0.0.48 '
-  kubectl apply -f ~/client.yaml
-  kubectl wait --for=condition=Ready pod -l app=ubuntu-client --timeout=120s
+  kubectl create configmap wrk-scripts --from-file=client/lua/ --dry-run=client -o yaml | kubectl apply -f -
+  CLIENT_IMAGE=<REGISTRY>/ubench-client:<tag> envsubst '"'"'${CLIENT_IMAGE}'"'"' < client/client.yaml | kubectl apply -f -
+  kubectl rollout status deploy/ubuntu-client --timeout=300s
   CLIENT=$(kubectl get pod -l app=ubuntu-client -o jsonpath="{.items[0].metadata.name}")
-  kubectl exec "$CLIENT" -- /wrk/wrk --timeout 20s -t4 -c16 -d30s -L \
-      -s /wrk/scripts/online-boutique/mix.lua http://frontend:80
+  kubectl exec "$CLIENT" -- /wrk2/wrk --timeout 20s -t4 -c16 -d60s -R1000 -L \
+      -s /lua/mix.lua http://frontend:80
 '
 ```
-Parameters mirror `k8s/boutique/run.sh`: `mix` workload, 4 threads, 16 connections,
-30 s. The `mix` workload is ~10% home / 10% set-currency / 50% browse / 10%
-add-to-cart / 15% view-cart / 5% checkout.
+Parameters mirror the pipeline defaults: `mix` workload, 4 threads, 16
+connections, 60 s at 1000 req/s. The `mix` workload is ~10% home / 10%
+set-currency / 50% browse / 10% add-to-cart / 15% view-cart / 5% checkout —
+defined in `client/lua/mix.lua`, editable in-repo (re-apply the ConfigMap and
+restart the client pod to pick up changes immediately).
 
-`wrk` prints client-side throughput and a latency distribution, e.g.:
+wrk2 prints client-side throughput and the corrected latency spectrum, e.g.:
 ```
-Requests/sec:   1667.00
-Latency Distribution  50% 8.56ms  90% 17.15ms  99% 25.25ms
-50045 requests in 30.02s
+Requests/sec:   1000.02
+Latency Distribution (HdrHistogram - Recorded Latency)  50% 8.56ms  99% 42.1ms  99.9% 87.3ms
+60012 requests in 60.00s
 ```
 
 ---
@@ -313,9 +328,14 @@ storage.
 
 ## 6. Re-run / change the workload
 
-- Different workload size: change `-t/-c/-d` in the `wrk` command (step 4).
-- Different benchmark: replace `boutique` in step 3 and point `wrk` at that
+- Different load: change `-t/-c/-d/-R` in the wrk2 command (step 4) — `-R` is
+  the offered rate and the primary knob; keep `-c >= -t`.
+- Different request mix: edit `client/lua/mix.lua` (or add a new `.lua`),
+  re-apply the `wrk-scripts` ConfigMap, restart the client pod.
+- Different benchmark: replace `boutique` in step 3 and point wrk2 at that
   benchmark's entrypoint (see `k8s/<bench>/run.sh`).
+- Reusable definitions (workers / replicas / rate / duration / segments) live in
+  `experiments/*.yaml` — see `experiments/README.md`.
 - Tear down a benchmark's services:
   ```bash
   CONTROL_HOST=10.0.0.48 SSH_USER=vm ./scripts/cloudlab/deploy.sh boutique --down

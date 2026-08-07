@@ -3,31 +3,38 @@
 ## 1. Instantiate a cluster
 
 1. Go to [Project Profiles](https://www.cloudlab.us/user-dashboard.php#projectprofiles).
-2. Pick the **r320x5** profile and click [Instantiate](https://www.cloudlab.us/show-profile.php?uuid=5e50d04b-1b1e-11f0-af1a-e4434b2381fc).
+2. Pick a profile whose nodes are named `node-0..node-N` on a shared `10.0.0.x`
+   LAN — e.g. the **r320x5** profile
+   ([Instantiate](https://www.cloudlab.us/show-profile.php?uuid=5e50d04b-1b1e-11f0-af1a-e4434b2381fc))
+   for the classic 1 control plane + 4 workers shape. Any node count works; the
+   scripts adapt.
 3. Change only the experiment **name** — keep everything else at the defaults.
 4. Once it's ready, grab the node hostnames from the **List View**.
 
-## 2. Point the scripts at your nodes
+## 2. Register the cluster
 
-Edit [nodes.sh](nodes.sh) — the single shared list of public hostnames sourced by both
-`bootstrap.sh` and `deploy.sh`. `node-0` MUST be first (it becomes the control plane) and
-the order must match the internal-IP order in [config.json](config.json). This is the only
-file you edit when swapping experiments.
+```bash
+python3 register_cluster.py apt120.apt.emulab.net apt096.apt.emulab.net ... [--check]
+```
 
-> **Cluster topology is now fixed at exactly 5 nodes.** The workloads pin every
+One command, hostnames from the List View in order (**node-0 first** — it
+becomes the control plane). It rewrites [nodes.sh](nodes.sh) and
+[config.json](config.json) consistently (internal IPs `10.0.0.101 + i`, ssh
+user, home dir; `--user/--ip-base/--home` to override, `--check` to ssh-probe
+every host first). Don't edit those files by hand.
+
+> **Placement is deterministic for any worker count.** The workloads pin every
 > service to a specific node via `nodeSelector: ubench.io/node-index: "<N>"` so
 > the pod→node layout (and therefore the network flow topology) is reproducible
 > across runs — see the per-workload `PLACEMENT.md` (e.g.
-> [k8s/boutique/PLACEMENT.md](../../k8s/boutique/PLACEMENT.md)). This requires:
+> [k8s/boutique/PLACEMENT.md](../../k8s/boutique/PLACEMENT.md)).
 >
-> - **node-0** = the control plane (tainted `NoSchedule`, runs no services), and
-> - **node-1 … node-4** = exactly four workers that run the services.
->
-> `deploy.sh` labels each node `ubench.io/node-index=<N>` from its `node-<N>`
-> ordinal on every deploy, so `nodes.sh` must list all five in order
-> (node-0 first). A cluster with fewer than four workers will leave some pods
-> stuck `Pending` (the selected node-index label won't exist); more than four
-> just go unused. The **r320x5** profile created by Yuanli `pentium3` gives exactly this shape.
+> - **node-0** = the control plane (tainted `NoSchedule`, runs no services);
+> - **node-1 … node-N** = workers. An experiment spec's `workers:` value says
+>   how many of them the placement spans; `deploy.sh` labels each node
+>   `ubench.io/node-index=<N>` from its `node-<N>` ordinal on every deploy and
+>   **fails fast** if the cluster has fewer workers than the experiment needs.
+>   Extra workers just go unused.
 
 ## 3. Bootstrap the cluster
 
@@ -38,38 +45,58 @@ file you edit when swapping experiments.
 Orchestrates the whole setup across all nodes: brings up the k8s cluster (`kube`) and applies
 firewall + SSH hardening (`secure`).
 
-## 4. Deploy a workload
+## 4. Deploy a workload / run an experiment
 
 ```bash
-./deploy.sh              # defaults to the boutique workload
-./deploy.sh movie        # any workload under k8s/<bench>/
+./deploy.sh                                              # boutique, defaults
+./deploy.sh movie                                        # any workload under k8s/<bench>/
+./deploy.sh --experiment ../../experiments/foo.yaml --run  # spec-driven experiment
 ```
 
-Copies the workload's `k8s/<bench>/` manifests to the control node, applies them, waits for
-rollout, and runs a heartbeat sweep to confirm the deploy is live.
+Renders the workload's manifests for the experiment (`render_manifests.py` —
+worker count, per-service replicas, chain-* processing times), copies the
+rendered `build/<name>/` to the control node, applies it, waits for rollout,
+and runs a heartbeat sweep to confirm the deploy is live. See
+[experiments/README.md](../../experiments/README.md) for the spec schema.
 
 Flags:
 
-- `--down` — tear down a workload's services (directory-based `kubectl delete`).
-- `--run` — after deploying, copy `scripts/run.sh` + `client/` up and drive the `wrk` load
-  test against the services. `wrk` params are env-overridable via `REQUEST` / `THREADS` /
-  `CONNS` / `DURATION` (defaults: mix, 4, 16, 30).
+- `--experiment <spec.yaml>` — render/deploy/run this experiment spec.
+- `--down` — tear down the currently deployed workload (deletes exactly the
+  manifests of the last deploy, kept on the control node).
+- `--run` — after deploying, drive **one continuous wrk2 load** and harvest
+  telemetry into one run dir per segment. Knobs (env overrides spec):
+  `REQUEST` / `THREADS` / `CONNS` / `RATE` / `TOTAL_S` / `SEGMENT_S`
+  (defaults: mix, 4, 16, 1000 req/s, 60s, =TOTAL_S).
 
 ```bash
-./deploy.sh boutique --run
+./deploy.sh boutique --run                        # one 60s segment at 1000 req/s
+RATE=500 TOTAL_S=1800 SEGMENT_S=600 ./deploy.sh boutique --run   # 3 x 10min segments
 ./deploy.sh boutique --down
 ```
 
+> **wrk2 is open-loop**: `RATE` is offered load, independent of how the cluster
+> responds, and latency is coordinated-omission-corrected. Numbers are NOT
+> comparable with the old closed-loop `wrk` runs (their tails were optimistic) —
+> `meta.json.generator` marks the epoch. Pick `RATE` below the saturation knee:
+> sweep procedure in [experiments/README.md](../../experiments/README.md).
+
 ### What `--run` collects, and where it goes
 
-`--run` wraps `run.sh` with `scripts/run_and_collect.sh`, which captures the run
-into a single self-contained directory on the control node and then copies it
-back to the host under `results/<bench>-<request>_<UTC-timestamp>/`:
+`--run` wraps `run.sh` with `scripts/run_and_collect.sh`: run.sh deploys the
+client and starts wrk2 detached in it; the collector then harvests telemetry
+every `SEGMENT_S` into its own self-contained run directory (all copied back to
+`results/<bench>-<request>_<UTC-timestamp>/`, one per segment). Segments exist
+because the log sources rotate with hard caps — a multi-hour run collected only
+at the end would silently lose its early hours — and because each run dir is
+then a contiguous time slice: consumers that split runs by timestamp get a
+temporal split of the long experiment for free. Keep `SEGMENT_S` ≤ ~900s.
 
 ```
-meta.json          run params + time window + istio/cilium/audit on/off
-run.log            full run.sh output (wrk result, heartbeat, top snapshot)
-wrk.txt            just the wrk latency/throughput block
+meta.json          params + window + rate offered/achieved + segment index
+run.log            setup output + the full wrk2 output (same in every segment)
+wrk.txt            the wrk2 stats block incl. the HdrHistogram percentile
+                   spectrum (whole-experiment stats, duplicated per segment)
 resources.csv      per-pod CPU/mem time-series, sampled every 5s (metrics-server)
 k8s_snapshot/      entity snapshot for graph construction (any cluster):
   objects.json     pods/services/endpoints/deployments/RS/STS/DS at run START
