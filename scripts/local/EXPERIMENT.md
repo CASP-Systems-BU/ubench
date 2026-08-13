@@ -2,7 +2,7 @@
 
 End-to-end runbook for standing up the `boutique` microservice benchmark on a
 self-hosted (non-CloudLab) Kubernetes cluster with **Istio** enabled, driving a
-`wrk` workload against it, and reading the resulting metrics — including the
+`wrk2` workload against it, and reading the resulting metrics — including the
 per-service (Istio) metrics that `kubectl top` cannot give you.
 
 Everything here is self-contained in `scripts/local/` and does **not** modify the
@@ -23,7 +23,7 @@ CloudLab scripts in `scripts/cloudlab/`.
 - **Orchestrator**: a separate machine (your laptop/dev box) that SSHes into the
   5 nodes. It is *not* part of the cluster; it only needs `python3` + `ssh`/`scp`.
 - All nodes: Ubuntu 24.04, single flat LAN (`10.0.0.0/24`), login user `vm`.
-- Three metric sources you will see: **wrk** (client-side latency/throughput),
+- Three metric sources you will see: **wrk2** (client-side latency/throughput),
   **metrics-server** (`kubectl top`, CPU/mem), and **Istio** (per-service request
   counts + latency, via Prometheus). Only the last is "Istio metrics".
 
@@ -174,7 +174,7 @@ cd /home/pentium3/Desktop/ubench
 scp -r client vm@10.0.0.48:~/client
 ssh vm@10.0.0.48 '
   kubectl create configmap wrk-scripts --from-file=client/lua/ --dry-run=client -o yaml | kubectl apply -f -
-  CLIENT_IMAGE=<REGISTRY>/ubench-client:<tag> envsubst '"'"'${CLIENT_IMAGE}'"'"' < client/client.yaml | kubectl apply -f -
+  CLIENT_IMAGE=ghcr.io/casp-systems-bu/wrk2-client:latest envsubst '"'"'${CLIENT_IMAGE}'"'"' < client/client.yaml | kubectl apply -f -
   kubectl rollout status deploy/ubuntu-client --timeout=300s
   CLIENT=$(kubectl get pod -l app=ubuntu-client -o jsonpath="{.items[0].metadata.name}")
   kubectl exec "$CLIENT" -- /wrk2/wrk --timeout 20s -t4 -c16 -d60s -R1000 -L \
@@ -198,8 +198,8 @@ Latency Distribution (HdrHistogram - Recorded Latency)  50% 8.56ms  99% 42.1ms  
 
 ## 5. Read the metrics
 
-### 5a. Client-side (wrk) — overall latency & throughput
-Already printed by the `wrk` command above: `Requests/sec`, the latency
+### 5a. Client-side (wrk2) — overall latency & throughput
+Already printed by the `wrk2` command above: `Requests/sec`, the latency
 percentiles, total requests, errors. This is the black-box, edge view.
 
 ### 5b. Per-pod CPU / memory (metrics-server)
@@ -212,7 +212,7 @@ ssh vm@10.0.0.48 kubectl top nodes
 Istio's Envoy sidecars export `istio_requests_total` and
 `istio_request_duration_milliseconds`, scraped by the in-cluster Prometheus. These
 give per-service request counts, error codes, and latency distributions — i.e. the
-internal call graph that wrk and `kubectl top` cannot see.
+internal call graph that wrk2 and `kubectl top` cannot see.
 
 **Option 1 — Prometheus UI (interactive):**
 ```bash
@@ -381,8 +381,8 @@ ssh vm@10.0.0.48 '
 '
 ```
 
-Run the `wrk` workload (step 4) under each setting and record them separately;
-comparing wrk latency/throughput and `kubectl top` between the two quantifies the
+Run the `wrk2` workload (step 4) under each setting and record them separately;
+comparing wrk2 latency/throughput and `kubectl top` between the two quantifies the
 mesh overhead. Toggling the label changes nothing in `app/` or `k8s/` — only how
 pods are admitted to the cluster.
 
@@ -396,4 +396,4 @@ pods are admitted to the cluster.
 | `kubeadm init` fails / kubelet won't start | cgroup v2 driver mismatch; docker.io's containerd ships with CRI disabled | `kube.sh` regenerates `/etc/containerd/config.toml` with CRI enabled + `SystemdCgroup=true`, and sets kubelet to systemd |
 | One node stuck, `Could not get lock /var/lib/dpkg/lock-frontend` | `unattended-upgrades` holds the apt lock | stop/disable it (step 1.4), then re-run `kube.sh` on that node |
 | A node `NotReady`, `cilium` agent pod not Ready | datapath not up yet / image pull | `cilium status --wait` on the control node; check `kubectl -n kube-system get pods -l k8s-app=cilium` |
-| heartbeat sweep `[FAIL]` for all services / `run.sh` hangs | the `echo \| nc` heartbeat is not valid HTTP for Envoy | ignore it under Istio; drive the load with the manual `wrk` step (4); the app and `wrk` use real HTTP and work |
+| heartbeat sweep `[FAIL]` for all services / `run.sh` hangs | the `echo \| nc` heartbeat is not valid HTTP for Envoy | ignore it under Istio; drive the load with the manual `wrk2` step (4); the app and `wrk2` use real HTTP and work |

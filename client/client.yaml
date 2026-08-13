@@ -42,9 +42,12 @@ spec:
           requests:
             cpu: "4"
             memory: 4Gi
-        # Tags are immutable (see scripts/BUILD.md), so IfNotPresent is safe
-        # and avoids a registry round-trip on every pod restart.
-        imagePullPolicy: IfNotPresent
+        # Always: the default image tag is :latest (tracks main via CI), and
+        # IfNotPresent would silently keep serving a node's stale cache after
+        # a new image is pushed. The manifest check is one registry round-trip
+        # per pod (re)start; pin a dated tag via CLIENT_IMAGE for runs that
+        # must be reproducible.
+        imagePullPolicy: Always
         volumeMounts:
         - name: wrk-scripts
           mountPath: /lua

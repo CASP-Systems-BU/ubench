@@ -1,5 +1,5 @@
 # Benchmark metadata consumed by scripts/render_manifests.py.
-entry_service: frontend      # wrk entry point; home node-1, first in round-robin
+entry_service: frontend      # wrk2 entry point; home node-1, first in round-robin
 default_request: mix         # client/lua/<request>.lua
 kind: wrk-lua                # wrk2 drives the frontend Service directly via Lua
 

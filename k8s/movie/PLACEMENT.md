@@ -13,7 +13,7 @@ mapping for `movie`.
 node-0 is the tainted control plane, so only worker indices 1..workers
 (default 4) are used. The
 client (`ubuntu-client`, pinned in `client/client.yaml`) always runs on node-1;
-`frontend` (the wrk entry point) is co-located there so the ingress hop is
+`frontend` (the wrk2 entry point) is co-located there so the ingress hop is
 intra-node and every entry->backend call crosses the overlay.
 
 ## Mapping

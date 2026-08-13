@@ -36,9 +36,11 @@ rate=${6:-${RATE:-1000}}
 
 LOAD_MODE="${LOAD_MODE:-block}"
 WARMUP_S="${WARMUP_S:-10}"
-# The one place the blessed client image lives. Update on each image release
-# (scripts/BUILD.md); override per-run with CLIENT_IMAGE=...
-export CLIENT_IMAGE="${CLIENT_IMAGE:-<REGISTRY>/ubench-client:latest}"
+# Default client image: built and pushed by CI (.github/workflows/client-image.yml)
+# on every push to main touching client/ or the Dockerfile. :latest tracks main;
+# for a reproducible experiment pin the immutable tag instead:
+#   CLIENT_IMAGE=ghcr.io/casp-systems-bu/wrk2-client:<YYYYMMDD>-g<sha> ...
+export CLIENT_IMAGE="${CLIENT_IMAGE:-ghcr.io/casp-systems-bu/wrk2-client:latest}"
 
 YAML_PATH=../k8s/$benchmark/yamls
 if [[ $benchmark == "synthetic" ]]; then

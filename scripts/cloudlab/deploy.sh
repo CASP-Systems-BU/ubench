@@ -27,7 +27,7 @@
 #     REQUEST=mix THREADS=4 CONNS=16       # load shape
 #     RATE=1000                            # wrk2 -R, total offered req/s
 #     TOTAL_S=3600 SEGMENT_S=600           # continuous load; one run dir per segment
-#     CLIENT_IMAGE=<registry>/ubench-client:<tag>   # load-generator image
+#     CLIENT_IMAGE=ghcr.io/casp-systems-bu/wrk2-client:<tag>   # load-generator image
 #
 # Prereqs: `ssh <user>@<control-host>` works with your CloudLab key in the
 # ssh-agent; python3 + PyYAML locally (for the manifest renderer).

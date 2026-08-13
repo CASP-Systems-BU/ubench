@@ -5,23 +5,37 @@ request-mix proxy. The Lua request mixes are **not** in the image — they live
 in `client/lua/` and are mounted via the `wrk-scripts` ConfigMap by
 `scripts/run.sh`, so editing a mix never needs a rebuild.
 
-Build from the **repo root**, with `client/` as the build context (the
-Dockerfile COPYs `./proxy` relative to the context):
+## CI (the normal path)
+
+GitHub Actions builds and pushes the image to the GitHub Container Registry on
+every push to `main` that touches `client/**` or `scripts/ClientDockerfile`
+(workflow: [.github/workflows/client-image.yml](../.github/workflows/client-image.yml);
+manual trigger available under the Actions tab). Each run pushes:
+
+- `ghcr.io/casp-systems-bu/wrk2-client:<YYYYMMDD>-g<shortsha>` — immutable,
+  use this to pin a reproducible experiment (`CLIENT_IMAGE=... ./deploy.sh ...`)
+- `ghcr.io/casp-systems-bu/wrk2-client:latest` — tracks main; the default in
+  `scripts/run.sh` (client.yaml uses `imagePullPolicy: Always` so nodes don't
+  serve a stale cache of it)
+
+**One-time setup after the first CI push:** the GHCR package is created
+private. Make it public so CloudLab kubelets can pull anonymously:
+GitHub → the org's Packages → `wrk2-client` → Package settings →
+Change visibility → Public. (Otherwise every cluster needs an imagePullSecret.)
+
+## Building locally (fallback)
+
+From the **repo root**, with `client/` as the build context (the Dockerfile
+COPYs `./proxy` relative to the context):
 
 ```bash
 TAG="$(date -u +%Y%m%d)-g$(git rev-parse --short HEAD)"
 docker build --platform linux/amd64 -f scripts/ClientDockerfile client/ \
-    -t <REGISTRY>/ubench-client:${TAG}
-docker push <REGISTRY>/ubench-client:${TAG}
+    -t ghcr.io/casp-systems-bu/wrk2-client:${TAG}
+docker push ghcr.io/casp-systems-bu/wrk2-client:${TAG}
 ```
 
-`<REGISTRY>` is your registry namespace (e.g. `docker.io/<dockerhub-user>`).
-Tags are immutable — the date+sha scheme ties every image to the Dockerfile
-revision that built it. Never point manifests at `:latest`.
-
-After pushing, update the `CLIENT_IMAGE` default in `scripts/run.sh` (the one
-place the blessed image tag lives); per-run override:
-`CLIENT_IMAGE=<REGISTRY>/ubench-client:<tag> ./scripts/cloudlab/deploy.sh ... --run`.
+(`docker login ghcr.io` with a GitHub PAT that has `write:packages` first.)
 
 To bump a pinned source: `--build-arg WRK2_SHA=<sha>` (or edit the Dockerfile
 defaults).
