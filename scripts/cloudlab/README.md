@@ -42,8 +42,11 @@ every host first). Don't edit those files by hand.
 ./bootstrap.sh
 ```
 
-Orchestrates the whole setup across all nodes: brings up the k8s cluster (`kube`) and applies
-firewall + SSH hardening (`secure`).
+Orchestrates the whole setup: brings up the k8s cluster (`kube`), refreshes
+the `ghcr-secret` image-pull secret on node-0 from a `gh` CLI token (`ghcr` —
+see [README-ghcr-secret-ubuntu-client.md](../../README-ghcr-secret-ubuntu-client.md)
+for the one-time `gh auth login` setup), and applies firewall + SSH hardening
+across all nodes (`secure`).
 
 ## 4. Deploy a workload / run an experiment
 
@@ -235,3 +238,31 @@ cilium hubble port-forward &
 hubble observe --follow                       # live flow stream
 hubble observe --verdict DROPPED              # just denied traffic
 ```
+
+## 7. Kubernetes attack simulation (Stratus Red Team, optional)
+
+```bash
+./bootstrap.sh stratus
+```
+
+Installs the [Stratus Red Team](https://stratus-red-team.cloud/) CLI on node-0
+and preflight-checks it against the live cluster (`stratus_init.sh`) —
+connectivity, RBAC perms, and egress for its one-time Terraform download.
+Idempotent, but **not** part of the default `./bootstrap.sh` flow — run it
+explicitly when you actually want it on the cluster.
+
+Stratus is a CLI run *from* node-0 *against* the cluster kubectl points at; it
+simulates individual attacker techniques (e.g. privilege escalation, persistence)
+by actually performing them, so you can validate detections / audit logging
+against realistic activity. It is not deployed as a workload:
+
+```bash
+ssh -A <user>@<node-0-hostname>
+stratus list --platform kubernetes                        # browse techniques
+stratus show k8s.persistence.create-token                 # inspect one
+stratus detonate k8s.persistence.create-token --cleanup    # run + tear down
+```
+
+`--cleanup` reverts what the technique created; omit it to leave the artifacts
+in place for inspection. See `STRATUS_VERSION`/`INSTALL_DIR` overrides at the
+top of `stratus_init.sh`.

@@ -30,6 +30,8 @@ spec:
       # exists; see k8s/boutique/PLACEMENT.md.
       nodeSelector:
         ubench.io/node-index: "1"
+      imagePullSecrets:
+        - name: ghcr-secret
       containers:
       - name: hr-client
         # Substituted by run.sh (envsubst restricted to this one var).

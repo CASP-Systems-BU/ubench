@@ -2,27 +2,43 @@
 #
 # Orchestrate the whole CloudLab k8s cluster setup *from your local machine*.
 #
-# Run this from wherever you normally `ssh yuhang@apt141.apt.emulab.net` from
+# Run this from wherever you normally `ssh WillG@apt141.apt.emulab.net` from
 # (your laptop / dev box). It will, over the *public* CloudLab hostnames:
 #
 #   kube      1. copy scripts/cloudlab/ up to the main node (node-0)
 #             2. run setup_kube.py there, which brings up the cluster over the
 #                internal 10.0.0.x network (agent-forwarded so node-0 can SSH
 #                into the workers with your CloudLab key)
-#   secure    3. on every node: apply the ufw rules (incl. OpenSSH) and harden
+#   ghcr      3. refresh the `ghcr-secret` k8s secret on node-0 from a `gh`
+#                CLI token (doesn't persist across a rebuild; the token does)
+#   secure    4. on every node: apply the ufw rules (incl. OpenSSH) and harden
 #                sshd -> key-only auth, no password login, no root login
 #
+#   stratus (not part of the default flow — run explicitly when you want it):
+#             copy + run stratus_init.sh on node-0, which installs the Stratus
+#             Red Team CLI there and preflight-checks it against the live
+#             cluster. Stratus is a CLI run FROM node-0 against the cluster,
+#             not something deployed into it. See stratus_init.sh's own header
+#             for usage once installed.
+#
 #   Usage:
-#     ./bootstrap.sh            # kube setup, then secure (default)
+#     ./bootstrap.sh            # kube setup, then ghcr, then secure (default)
 #     ./bootstrap.sh kube       # only copy + run setup_kube.py
 #     ./bootstrap.sh addons     # only the config.json-gated add-ons
 #                                 (enable_audit_log, enable_istio_metrics) —
 #                                 safe on a live, already-initialized cluster
+#     ./bootstrap.sh ghcr       # only refresh the ghcr-secret (idempotent —
+#                                 safe to re-run any time, e.g. after a token
+#                                 refresh). Requires `gh auth login` once on
+#                                 this machine — see refresh_ghcr_secret.sh
+#     ./bootstrap.sh stratus    # install/verify Stratus Red Team on node-0
+#                                 (idempotent; safe on a live cluster; NOT run
+#                                 by `all` — opt in explicitly)
 #     ./bootstrap.sh secure     # only apply firewall + SSH hardening
 #                                 (alias: `firewall`)
 #
 # Prereqs on the machine you run this from:
-#   * `ssh yuhang@apt141.apt.emulab.net` already works (key in your ssh-agent)
+#   * `ssh WillG@apt141.apt.emulab.net` already works (key in your ssh-agent)
 #   * that key is what authenticates to all the CloudLab nodes (it is, by
 #     default) — `ssh -A` forwards it so node-0 can reach the workers.
 #
@@ -34,7 +50,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # (register_cluster.py writes it); SSH_USER env overrides.
 CFG_USER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["nodes_user"])' \
 	"${SCRIPT_DIR}/config.json" 2>/dev/null || true)"
-USER="${SSH_USER:-${CFG_USER:-yuhang}}"
+USER="${SSH_USER:-${CFG_USER:-WillG}}"
 
 # Public CloudLab hostnames live in nodes.sh (node-0 first = control plane).
 source "${SCRIPT_DIR}/nodes.sh"
@@ -138,13 +154,26 @@ setup_kube()   { copy_scripts; run_setup_kube ""; }
 # the supported way to roll out new gates without re-provisioning.
 setup_addons() { copy_scripts; run_setup_kube "--addons-only"; }
 
+setup_ghcr()   { "${SCRIPT_DIR}/refresh_ghcr_secret.sh"; }
+
+# Stratus runs FROM node-0 against the cluster; install it there rather than
+# locally. copy_scripts already ships stratus_init.sh up with everything else.
+setup_stratus() {
+	copy_scripts
+	echo "[*] Installing/verifying Stratus Red Team on main node (${MAIN})..."
+	ssh "${SSH_OPTS[@]}" "${USER}@${MAIN}" \
+		"cd ~/ubench/scripts/cloudlab && chmod +x stratus_init.sh && ./stratus_init.sh"
+}
+
 # ---------------------------------------------------------------------------
 case "${1:-all}" in
 	kube)            setup_kube ;;
 	addons)          setup_addons ;;
+	ghcr)            setup_ghcr ;;
+	stratus)         setup_stratus ;;
 	secure|firewall) setup_secure ;;
-	all)             setup_kube; setup_secure ;;
-	*) echo "usage: $0 [kube|addons|secure|all]" >&2; exit 1 ;;
+	all)             setup_kube; setup_ghcr; setup_secure ;;
+	*) echo "usage: $0 [kube|addons|ghcr|stratus|secure|all]" >&2; exit 1 ;;
 esac
 
 echo "[*] Done."
