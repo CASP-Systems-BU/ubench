@@ -111,7 +111,7 @@ fi
 # ---- 4. verify the binary runs ---------------------------------------------
 log "Verifying stratus..."
 stratus version || die "stratus installed but won't run"
-n="$(stratus list --platform kubernetes 2>/dev/null | grep -c '^k8s\.' || true)"
+n="$(stratus list --platform kubernetes 2>/dev/null | grep -oE 'k8s\.[A-Za-z0-9_.-]+' | sort -u | wc -l)"
 ok "stratus sees ${n} Kubernetes techniques"
  
 # ---- 5. egress soft-check (first 'warmup' downloads Terraform) -------------
