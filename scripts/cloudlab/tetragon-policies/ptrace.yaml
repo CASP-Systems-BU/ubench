@@ -1,0 +1,17 @@
+# sys_ptrace syscall hook. ptrace is a classic credential-access/container-
+# breakout primitive (attaching to another process to read its memory, e.g.
+# to steal a credential that was never written to disk) -- not exercised by
+# any of the Stratus Kubernetes techniques tested so far, but worth having on
+# for the privilege-escalation/persistence tactics generally.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "syscall-ptrace"
+spec:
+  kprobes:
+  # long ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data);
+  - call: "sys_ptrace"
+    syscall: true
+    args:
+    - index: 2
+      type: "int"

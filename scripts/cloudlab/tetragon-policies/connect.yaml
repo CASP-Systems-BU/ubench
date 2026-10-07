@@ -1,0 +1,35 @@
+# Network connect/send/close, via the tcp_connect/tcp_close/tcp_sendmsg kernel
+# functions (syscall: false) rather than hooking sys_connect directly -- this
+# is upstream Tetragon's own recommended approach (examples/tracingpolicy/
+# tcp-connect.yaml) since it gets a `sock` struct directly instead of having
+# to correlate a raw sys_connect's sockaddr arg back to a socket.
+#
+# This is the one that matters for techniques that cross the control-plane ->
+# worker-node network boundary (k8s.privilege-escalation.nodes-proxy's
+# kubelet-proxy hop, k8s.credential-access.steal-serviceaccount-token's
+# `kubectl exec` stream) -- see README-stratus-red-team.md's network-visibility
+# discussion. Everything else we've tested (dump-secrets, create-token,
+# privileged-pod) is pure control-plane API semantics and won't show up here.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "syscall-connect"
+spec:
+  kprobes:
+  - call: "tcp_connect"
+    syscall: false
+    args:
+    - index: 0
+      type: "sock"
+  - call: "tcp_close"
+    syscall: false
+    args:
+    - index: 0
+      type: "sock"
+  - call: "tcp_sendmsg"
+    syscall: false
+    args:
+    - index: 0
+      type: "sock"
+    - index: 2
+      type: "int"

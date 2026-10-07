@@ -72,7 +72,19 @@ class ShellHelper:
             '/bin/bash', file, *args
         ]
 
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            # check=True + capture_output=True hides the remote command's real
+            # stdout/stderr inside the exception (CalledProcessError.__str__
+            # only prints the exit code) -- surface it before re-raising so a
+            # failure says WHY, not just THAT.
+            print(f"[!] {file} failed on {node_ip} (rc={e.returncode})", flush=True)
+            if e.stdout:
+                print(f"--- stdout ---\n{e.stdout}", flush=True)
+            if e.stderr:
+                print(f"--- stderr ---\n{e.stderr}", flush=True)
+            raise
         return result.stdout.strip()
 
     def execute_parallel(self, file=None, mode=0, args=[]):
@@ -89,11 +101,20 @@ class ShellHelper:
                 continue
             execute_args = (node, config["nodes_user"], file, args)
             p = Process(target=self.execute_script, args=execute_args)
-            processes.append(p)
+            processes.append((node, p))
             p.start()
 
-        for p in processes:
+        failed = []
+        for node, p in processes:
             p.join()
+            # A child Process that raises prints its own traceback (inherited
+            # stderr) but .join() alone never surfaces a nonzero exitcode to
+            # the parent -- without this check a failed node's setup is
+            # silently skipped instead of aborting the whole run.
+            if p.exitcode != 0:
+                failed.append(node)
+        if failed:
+            raise RuntimeError(f"{file} failed on node(s): {', '.join(failed)} (see tracebacks above)")
     
 if __name__ == "__main__":
     # create the shell helper

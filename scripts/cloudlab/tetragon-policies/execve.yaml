@@ -1,0 +1,15 @@
+# Raw sys_execve syscall hook. Tetragon already emits a process_exec event for
+# every exec by default (no policy needed) -- this is the syscall-ABI-level
+# variant for when you specifically want the raw syscall entry/return timing
+# rather than Tetragon's own higher-level process lifecycle tracking.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "syscall-execve"
+spec:
+  kprobes:
+  - call: "sys_execve"
+    syscall: true
+    args:
+    - index: 0
+      type: "string"      # const char *filename

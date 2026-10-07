@@ -9,5 +9,6 @@
     ],
     "nodes_home": "/users/WillG",
     "enable_istio_metrics": true,
-    "enable_audit_log": true
+    "enable_audit_log": true,
+    "enable_tetragon": true
 }

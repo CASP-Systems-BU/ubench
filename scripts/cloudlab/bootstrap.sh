@@ -25,8 +25,9 @@
 #     ./bootstrap.sh            # kube setup, then ghcr, then secure (default)
 #     ./bootstrap.sh kube       # only copy + run setup_kube.py
 #     ./bootstrap.sh addons     # only the config.json-gated add-ons
-#                                 (enable_audit_log, enable_istio_metrics) —
-#                                 safe on a live, already-initialized cluster
+#                                 (enable_audit_log, enable_istio_metrics,
+#                                 enable_tetragon) — safe on a live,
+#                                 already-initialized cluster
 #     ./bootstrap.sh ghcr       # only refresh the ghcr-secret (idempotent —
 #                                 safe to re-run any time, e.g. after a token
 #                                 refresh). Requires `gh auth login` once on
@@ -149,7 +150,7 @@ run_setup_kube() {
 setup_kube()   { copy_scripts; run_setup_kube ""; }
 
 # Apply only the config.json-gated add-ons (enable_audit_log,
-# enable_istio_metrics) to an ALREADY-initialized cluster. Full `kube` setup
+# enable_istio_metrics, enable_tetragon) to an ALREADY-initialized cluster. Full `kube` setup
 # can't re-run there (kubeadm init fails on an initialized cluster); this is
 # the supported way to roll out new gates without re-provisioning.
 setup_addons() { copy_scripts; run_setup_kube "--addons-only"; }

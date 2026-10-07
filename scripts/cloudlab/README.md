@@ -239,7 +239,44 @@ hubble observe --follow                       # live flow stream
 hubble observe --verdict DROPPED              # just denied traffic
 ```
 
-## 7. Kubernetes attack simulation (Stratus Red Team, optional)
+## 7. Syscall observability (Tetragon, optional)
+
+```bash
+./bootstrap.sh addons    # once "enable_tetragon": true is set in config.json
+```
+
+Installs [Tetragon](https://tetragon.io) (eBPF-based syscall/runtime
+observability, a Cilium sub-project) as a DaemonSet — one agent per node.
+Unlike Istio/Cilium, no TracingPolicy is applied by the install itself: that's
+deliberately a separate step, so individual syscall hooks can be toggled on
+their own without touching the agent:
+
+```bash
+cd tetragon-policies && cat README.md     # what's available, and why
+../tetra_policy.sh list
+../tetra_policy.sh enable openat          # apply one policy
+../tetra_policy.sh disable openat         # remove it, no agent restart
+```
+
+By default (no policy applied) Tetragon still emits a `process_exec` /
+`process_exit` event for every process lifecycle event in the cluster, at
+~1.7% overhead per [Isovalent's own benchmark](https://tetragon.io/docs/concepts/tracing-policy/hooks/) —
+applied policies add specific raw syscalls (network connect, file open,
+ptrace, setuid) on top of that.
+
+Every agent pod runs a second container, `export-stdout`, that dumps the JSON
+event stream to its own stdout — cluster-wide live tail is just:
+
+```bash
+kubectl -n kube-system logs -l app.kubernetes.io/name=tetragon -c export-stdout -f --timestamps --prefix
+```
+
+Not yet wired into `deploy.sh --run` / `results/` — that's the next step,
+mirroring how Cilium's Hubble flows are captured (streamed live for the whole
+experiment, sliced per segment by timestamp). For now, tail it manually
+alongside a run if you want to eyeball events live.
+
+## 8. Kubernetes attack simulation (Stratus Red Team, optional)
 
 ```bash
 ./bootstrap.sh stratus

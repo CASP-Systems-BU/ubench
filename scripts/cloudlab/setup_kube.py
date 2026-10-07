@@ -77,16 +77,36 @@ class KubeSetUp:
             self.shell_helper.get_home_path(audit_script_path),
         )
 
+    def enable_tetragon_on_main(self):
+        # Tetragon (eBPF syscall/runtime observability): installs the
+        # DaemonSet (one agent per node) via Helm. No TracingPolicy is applied
+        # here -- that's separate (tetra_policy.sh), so individual syscall
+        # hooks can be toggled without touching the agent install.
+        # Gated by "enable_tetragon" in config.json (default off).
+        print("[*] Enabling Tetragon (eBPF syscall observability) on main node...")
+        config = self.shell_helper.config
+        tetragon_script_path = "./enable_tetragon.sh"
+        self.shell_helper.copy_files_to_nodes(tetragon_script_path, mode=2)
+        result = self.shell_helper.execute_script(
+            config["nodes"][0],
+            config["nodes_user"],
+            self.shell_helper.get_home_path(tetragon_script_path),
+        )
+        print(result)
+
     def addons_setup(self):
         # All config-gated cluster add-ons. Factored out of kube_cluster_setup
         # so it can also run standalone against an already-initialized cluster
         # (`./bootstrap.sh addons` -> `setup_kube.py --addons-only`).
         # Audit before Istio: the apiserver restart finishes before istioctl
-        # talks to it, and the Istio (re)install itself gets audited.
+        # talks to it, and the Istio (re)install itself gets audited. Tetragon
+        # last: it's independent of both and heaviest to install (Helm).
         if self.shell_helper.config.get("enable_audit_log", False):
             self.enable_audit_log_on_main()
         if self.shell_helper.config.get("enable_istio_metrics", False):
             self.enable_istio_metrics_on_main()
+        if self.shell_helper.config.get("enable_tetragon", False):
+            self.enable_tetragon_on_main()
 
     def kube_cluster_setup(self):
         self.environment_setup()

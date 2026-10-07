@@ -1,0 +1,18 @@
+# sys_setuid syscall hook. Direct signal for privilege escalation inside a
+# container -- a process changing its own UID is the textbook follow-on after
+# k8s.privilege-escalation.privileged-pod or k8s.privilege-escalation.hostpath-
+# volume land you root on the node: this catches what happens *inside* the
+# process after the breakout, which the k8s audit log (control-plane API
+# calls only) can never see.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "syscall-setuid"
+spec:
+  kprobes:
+  # int setuid(uid_t uid);
+  - call: "sys_setuid"
+    syscall: true
+    args:
+    - index: 0
+      type: "int"

@@ -1,0 +1,28 @@
+# sys_openat syscall hook, unfiltered (every open, any path/flags). This is
+# the broadest/noisiest policy in the scaffold -- it's what would catch e.g.
+# `stratus detonate k8s.credential-access.steal-serviceaccount-token` reading
+# /var/run/secrets/kubernetes.io/serviceaccount/token inside a pod, or any
+# read of a mounted Secret. Narrow it with a `selectors.matchArgs` block (see
+# upstream cilium/tetragon examples/tracingpolicy/openat_write.yaml) once
+# you've measured the unfiltered overhead and want to cut volume -- Tetragon
+# filters in-kernel, so a narrowed copy of this file is strictly cheaper, not
+# just quieter.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "syscall-openat"
+spec:
+  kprobes:
+  - call: "sys_openat"
+    syscall: true
+    return: true
+    args:
+    - index: 0
+      type: "int"          # dirfd
+    - index: 1
+      type: "string"       # const char *pathname
+    - index: 2
+      type: "int"          # flags (O_CREAT=0x40, O_WRONLY=0x01, O_RDWR=0x02, ...)
+    returnArg:
+      index: 0
+      type: "int"           # fd, or negative errno

@@ -91,9 +91,10 @@ def main() -> None:
         "nodes_user": user,
         "nodes": ips,
         "nodes_home": home,
-        # Preserve the add-on gates; default both on for new files.
+        # Preserve the add-on gates; default all on for new files.
         "enable_istio_metrics": old.get("enable_istio_metrics", True),
         "enable_audit_log": old.get("enable_audit_log", True),
+        "enable_tetragon": old.get("enable_tetragon", True),
     }
     with open(cfg_path, "w") as f:
         json.dump(cfg, f, indent=4)
