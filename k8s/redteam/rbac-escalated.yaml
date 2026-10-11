@@ -1,0 +1,60 @@
+# Escalated RBAC profile: a compromised identity whose lateral movement and
+# privilege escalation SUCCEED. Apply this instead of rbac-recon.yaml to collect
+# "successful attack" samples (cluster-wide secret theft, pod creation, exec into
+# other pods). Still confined to a single SA so labeling stays exact; still torn
+# down after capture.
+#
+#   RBAC_PROFILE=escalated ./scripts/cloudlab/redteam.sh boutique
+#
+# Reuses the same ServiceAccount + in-namespace Role/RoleBinding from
+# rbac-recon.yaml (redteam-agent, redteam-agent-ns); apply this file AFTER (or
+# together with) rbac-recon.yaml — it only adds the broad ClusterRole binding.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: redteam-agent-escalated
+  labels:
+    ubench.io/role: attacker
+rules:
+  # Cluster-wide secret / token theft.
+  - apiGroups: [""]
+    resources: ["secrets", "serviceaccounts", "serviceaccounts/token"]
+    verbs: ["get", "list", "create"]
+  # Workload creation + command execution (lateral movement, container breakout
+  # attempts via privileged/hostPath pods the agent may create).
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/attach"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "create", "delete"]
+  # Persistence + privilege escalation via RBAC. The `bind` and `escalate` verbs
+  # are required: without them the apiserver's anti-privilege-escalation check
+  # denies binding this SA to a role more powerful than it already holds (e.g.
+  # cluster-admin), so the self-grant technique would 403 instead of succeeding.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "clusterroles"]
+    verbs: ["get", "list", "create", "update", "bind", "escalate"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings", "clusterrolebindings"]
+    verbs: ["get", "list", "create"]
+  # Topology read (same as recon).
+  - apiGroups: [""]
+    resources: ["namespaces", "nodes", "services", "endpoints", "configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: redteam-agent-escalated
+  labels:
+    ubench.io/role: attacker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redteam-agent-escalated
+subjects:
+  - kind: ServiceAccount
+    name: redteam-agent
+    namespace: redteam

@@ -1,0 +1,77 @@
+# Decoy pivot target: a realistically over-privileged "CI runner" identity.
+#
+# Many breached clusters contain one SA bound far too broadly (a CI/operator/
+# backup SA). This plants exactly that: a ServiceAccount `ci-runner` in the
+# redteam namespace, bound to cluster-admin, running in a pod with its token
+# mounted. It gives the exec (T2) and token (T4) tiers something real to pivot
+# TO — otherwise those techniques dead-end (this cluster has no other admin SA).
+#
+# Two success paths it enables:
+#   - exec:  `kubectl exec` into the ci-runner pod, read the mounted token at
+#            /var/run/secrets/kubernetes.io/serviceaccount/token → cluster-admin.
+#   - token: `kubectl create token ci-runner -n redteam` → cluster-admin.
+#
+# Everything is in namespace redteam (labelled malicious) EXCEPT the
+# ClusterRoleBinding, which is cluster-scoped — redteam.sh tears it down by name
+# (ci-runner-admin). A leftover binding IS a real cluster-admin grant, so the
+# teardown must run; `--keep` leaves it up deliberately.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-runner
+  namespace: redteam
+  labels:
+    ubench.io/role: decoy
+---
+# The over-privilege: a full cluster-admin binding on the decoy SA.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ci-runner-admin
+  labels:
+    ubench.io/role: decoy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: ci-runner
+    namespace: redteam
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ci-runner
+  namespace: redteam
+  labels:
+    app: ci-runner
+    ubench.io/role: decoy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ci-runner
+  template:
+    metadata:
+      labels:
+        app: ci-runner
+        ubench.io/role: decoy
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: ci-runner
+      # The foothold-worthy mistake: the admin token is mounted into the pod.
+      automountServiceAccountToken: true
+      nodeSelector:
+        ubench.io/node-index: "2"
+      containers:
+        - name: runner
+          image: alpine/k8s:1.32.1
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 128Mi

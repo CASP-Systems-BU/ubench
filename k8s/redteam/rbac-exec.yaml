@@ -1,0 +1,42 @@
+# T2 — exec-lateral. Additive over rbac-recon.yaml. Grants `pods/exec` (and
+# attach/log) in the `redteam` namespace, where the decoy targets live
+# (decoy-privileged-sa.yaml's ci-runner pod, victim-host.yaml). The attack that
+# SUCCEEDS is lateral movement by command execution: the agent `kubectl exec`s
+# into a neighbouring pod and operates as that workload — e.g. reading the
+# cluster-admin token mounted in the ci-runner pod, or changing victim-host's
+# root password. Telemetry is a pods/exec audit event + a new east-west exec
+# stream from the attacker pod.
+#
+# Scope is the redteam namespace so every exec stays labelled and contained.
+# For noisier, cross-namespace data, change this Role/RoleBinding to a
+# ClusterRole/ClusterRoleBinding (the verbs are identical).
+#
+#   RBAC_PROFILE=exec DEPLOY_VICTIM=1 ./scripts/cloudlab/redteam.sh boutique
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: redteam-agent-exec
+  namespace: redteam
+  labels:
+    ubench.io/role: attacker
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/attach", "pods/log"]
+    verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redteam-agent-exec
+  namespace: redteam
+  labels:
+    ubench.io/role: attacker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: redteam-agent-exec
+subjects:
+  - kind: ServiceAccount
+    name: redteam-agent
+    namespace: redteam

@@ -1,0 +1,75 @@
+# Privileged foothold variant of attacker.yaml. Select it with FOOTHOLD=privileged
+# on redteam.sh (it replaces attacker.yaml; same Deployment/SA name
+# `redteam-agent`, so RBAC, labeling, and redteam.sh's pod lookup are unchanged).
+#
+# This models a compromised PRIVILEGED workload (e.g. a breached logging/
+# monitoring/CNI DaemonSet), the most direct real-world path to node takeover.
+# Unlike the plain foothold, the agent is node-root from round 1: it does not
+# need `pods: create` to break out — the host filesystem is already mounted at
+# /host, the host PID namespace is shared, and the container is privileged. From
+# here it can read every pod's SA token under /host/var/lib/kubelet/pods/, the
+# kubelet client cert, and (on a control node) etcd.
+#
+# Allowed because this cluster enforces no Pod Security Standard (verified: no
+# namespace carries a pod-security.kubernetes.io/enforce label). Pair with any
+# RBAC tier; it needs none of them for the breakout itself.
+#
+#   FOOTHOLD=privileged RBAC_PROFILE=recon ./scripts/cloudlab/redteam.sh boutique
+#
+# NOTE: host access here is for READ/harvest (tokens, certs) — non-destructive and
+# gone when the pod is deleted. Do not direct it to modify real node files.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redteam-agent
+  namespace: redteam
+  labels:
+    app: redteam-agent
+    ubench.io/role: attacker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redteam-agent
+  template:
+    metadata:
+      labels:
+        app: redteam-agent
+        ubench.io/role: attacker
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: redteam-agent
+      automountServiceAccountToken: true
+      # The compromised-privileged-workload modelling: share the host's PID
+      # namespace and network, and run privileged so the breakout is immediate.
+      hostPID: true
+      hostNetwork: true
+      nodeSelector:
+        ubench.io/node-index: "2"
+      containers:
+        - name: agent
+          image: alpine/k8s:1.32.1
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          resources:
+            requests:
+              cpu: "250m"
+              memory: 256Mi
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "command -v kubectl >/dev/null"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            # Full host filesystem — the direct node-takeover primitive.
+            - name: host-root
+              mountPath: /host
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory

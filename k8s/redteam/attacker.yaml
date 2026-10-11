@@ -1,0 +1,62 @@
+# The red-team launchpad: the single "compromised" pod the LLM agent operates
+# from. hackingBuddyGPT (running on the dev box) drives a shell INSIDE this pod
+# via `kubectl exec` (see redteam/capabilities/pod_shell.py), so from the model's
+# point of view it has a post-compromise shell on a workload that happens to have
+# an over-permissioned service-account token mounted.
+#
+# Image: alpine/k8s bundles kubectl + curl + jq + bind-tools (dig/nslookup) and a
+# shell — a public image matching the cluster's v1.32, so no build/push/pull-secret
+# is needed (unlike the private ghcr client image). The pod just sleeps; all
+# activity is injected by the agent through exec.
+#
+# Identity for ground-truth labeling:
+#   namespace  redteam
+#   SA         system:serviceaccount:redteam:redteam-agent   (audit user)
+#   pod IP     captured at launch by redteam.sh -> attack/attack.json
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redteam-agent
+  namespace: redteam
+  labels:
+    app: redteam-agent
+    ubench.io/role: attacker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redteam-agent
+  template:
+    metadata:
+      labels:
+        app: redteam-agent
+        ubench.io/role: attacker
+      annotations:
+        # No service mesh on the attacker: a compromised backend workload, not a
+        # mesh member. Its L7 calls to boutique are still seen destination-side.
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: redteam-agent
+      # Mount the SA token so the agent can authenticate to the API server as
+      # redteam-agent (this is the "foothold credential"). This is the default,
+      # set explicitly for clarity.
+      automountServiceAccountToken: true
+      # Pinned to a worker that hosts boutique backends (node-index 2 = cart/
+      # checkout/currency) so east-west recon/lateral-movement generates real
+      # co-located network flows. node-index labels are applied by deploy.sh.
+      nodeSelector:
+        ubench.io/node-index: "2"
+      containers:
+        - name: agent
+          image: alpine/k8s:1.32.1
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              cpu: "250m"
+              memory: 256Mi
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "command -v kubectl >/dev/null"]
+            initialDelaySeconds: 2
+            periodSeconds: 5

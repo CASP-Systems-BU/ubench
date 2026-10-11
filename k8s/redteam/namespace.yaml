@@ -1,0 +1,10 @@
+# Dedicated namespace for the red-team launchpad. A distinct namespace is the
+# primary ground-truth boundary: every object here (and the attacker pod's API
+# identity / pod IP) is labeled malicious by the gnnid labeler. Nothing benign
+# ever runs in `redteam`, so namespace alone is a high-precision label.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: redteam
+  labels:
+    ubench.io/role: attacker

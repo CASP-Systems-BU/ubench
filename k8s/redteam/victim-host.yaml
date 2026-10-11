@@ -1,0 +1,53 @@
+# Sacrificial "host" for credential-change / lockout objectives.
+#
+# This models a plain Linux box the attacker pivots onto and takes over by
+# CHANGING ITS ROOT PASSWORD (a classic persistence / owner-lockout action). It
+# is a disposable pod in the redteam namespace, NOT a real cluster node — so the
+# attack is fully reversible (delete the pod) and never touches CloudLab host
+# credentials. Do the destructive impact HERE, not against a worker/control node.
+#
+# It boots with a known weak root password (root:redteam123) so the agent can
+# first authenticate/verify, then change it. It carries NO service-account token
+# (automount off) — it is a host, not a Kubernetes identity. The agent reaches it
+# with the exec (T2) tier: `kubectl exec -n redteam deploy/victim-host -- \
+#   bash -lc 'echo root:<new> | chpasswd'`.
+#
+# Deploy it by setting DEPLOY_VICTIM=1 on redteam.sh and give the agent the
+# credential-change GOAL (see redteam.sh header / REDTEAM.md).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: victim-host
+  namespace: redteam
+  labels:
+    app: victim-host
+    ubench.io/role: decoy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: victim-host
+  template:
+    metadata:
+      labels:
+        app: victim-host
+        ubench.io/role: decoy
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        ubench.io/node-index: "2"
+      containers:
+        - name: host
+          image: ubuntu:22.04
+          imagePullPolicy: IfNotPresent
+          # Set the initial weak root password, then idle. sshd is not required:
+          # the agent changes the password via `chpasswd` over `kubectl exec`,
+          # which produces the same credential-modification telemetry.
+          command: ["bash", "-lc", "echo 'root:redteam123' | chpasswd && echo '[victim-host] ready (root password set)' && sleep infinity"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 128Mi
