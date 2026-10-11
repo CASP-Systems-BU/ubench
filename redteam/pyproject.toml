@@ -1,0 +1,25 @@
+[project]
+name = "k8s-redteam"
+version = "0.1.0"
+description = "hackingBuddyGPT post-compromise Kubernetes red-team agent for ubench telemetry labeling"
+requires-python = ">=3.13"
+# hackingBuddyGPT's current API (v0.5.0: Capability.to_model tool-calling,
+# AutonomousAgentUseCase, ChatAgent) lives on GitHub main; PyPI still ships the
+# older 0.3.x line, so pin the dep to the validated upstream commit.
+dependencies = [
+    "hackingbuddygpt @ git+https://github.com/ipa-lab/hackingBuddyGPT.git@799f57e",
+]
+
+[project.scripts]
+redteam-agent = "k8s_redteam.run_agent:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# Needed because the hackingbuddygpt dependency is a direct git reference.
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["k8s_redteam"]
