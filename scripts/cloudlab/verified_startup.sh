@@ -23,11 +23,11 @@ cd "${SCRIPT_DIR}"
 # PASTE NEW NODE HOSTNAMES HERE (node-0 first -- becomes the control plane).
 # From the CloudLab experiment's List View, in order.
 NODE_HOSTS=(
-	"pc508.emulab.net"
-	"pc422.emulab.net"
-	"pc428.emulab.net"
-	"pc505.emulab.net"
-	"pc426.emulab.net"
+	"pc529.emulab.net"
+	"pc546.emulab.net"
+	"pc536.emulab.net"
+	"pc550.emulab.net"
+	"pc555.emulab.net"
 )
 
 # IP base for the cluster LAN. Only needed if your profile's node-0 isn't
