@@ -5,9 +5,9 @@
 # CloudLab experiments instead of editing by hand. node-0 is first and
 # lines up with the internal-IP order in config.json (10.0.0.101 == node-0).
 NODES=(
-	"apt120.apt.emulab.net"   # node-0 / 10.0.0.101  (control-plane)
-	"apt104.apt.emulab.net"   # node-1 / 10.0.0.102
-	"apt096.apt.emulab.net"   # node-2 / 10.0.0.103
-	"apt118.apt.emulab.net"   # node-3 / 10.0.0.104
-	"apt106.apt.emulab.net"   # node-4 / 10.0.0.105
+	"apt097.apt.emulab.net"   # node-0 / 10.0.0.101  (control-plane)
+	"apt119.apt.emulab.net"   # node-1 / 10.0.0.102
+	"apt115.apt.emulab.net"   # node-2 / 10.0.0.103
+	"apt095.apt.emulab.net"   # node-3 / 10.0.0.104
+	"apt093.apt.emulab.net"   # node-4 / 10.0.0.105
 )
