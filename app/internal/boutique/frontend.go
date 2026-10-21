@@ -83,3 +83,14 @@ func Checkout(ctx context.Context, request CheckoutRequest) CheckoutResponse {
 		Res: res.Order,
 	}
 }
+
+// Recommend forwards to the (agentic) recommendations service. It is a thin
+// passthrough so the wrk2 driver, which only hits the frontend, can exercise
+// the agent via a dedicated /ro_recommend route without changing the existing
+// home/browse/checkout paths.
+func Recommend(ctx context.Context, request GetRecommendationsRequest) GetRecommendationsResponse {
+	if debug_frontend {
+		fmt.Println("Recommend: ", request)
+	}
+	return invoke.Invoke[GetRecommendationsResponse](ctx, "recommendations", "ro_get_recommendations", request, http.Request{})
+}
