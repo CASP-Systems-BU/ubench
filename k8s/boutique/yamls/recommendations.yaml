@@ -42,6 +42,33 @@ spec:
               value: "3000"
             - name: APP_NAME
               value: "recommendations"
+            # --- Agentic recommendations backend (see docs/AGENTIC.md) ---
+            - name: AGENT_MODE
+              value: "stub"            # stub (default: free, deterministic) | llm (external egress)
+            - name: AGENT_MAX_STEPS
+              value: "3"
+            - name: AGENT_SAMPLE
+              value: "1.0"             # fraction of llm-mode calls that actually hit the model
+            - name: AGENT_SEED
+              value: "42"
+            - name: AGENT_CATALOG_SIZE
+              value: "10"
+            # LLM backend knobs (used only when AGENT_MODE=llm). Set base URL +
+            # model when running the llm experiment; the key comes from a Secret.
+            - name: AGENT_LLM_BASE_URL
+              value: ""                # e.g. https://openrouter.ai/api/v1
+            - name: AGENT_LLM_MODEL
+              value: ""                # e.g. openai/gpt-4o-mini
+            - name: AGENT_LLM_TEMPERATURE
+              value: "0"
+            - name: AGENT_LLM_TIMEOUT_MS
+              value: "8000"
+            - name: AGENT_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: recommendations-llm
+                  key: api-key
+                  optional: true       # stub mode needs no secret; pod still starts
           ports:
             - containerPort: 3000
           imagePullPolicy: Always

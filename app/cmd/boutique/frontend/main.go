@@ -54,6 +54,11 @@ func checkout(ctx context.Context, request *boutique.CheckoutRequest) *boutique.
 	return &resp
 }
 
+func recommend(ctx context.Context, request *boutique.GetRecommendationsRequest) *boutique.GetRecommendationsResponse {
+	resp := boutique.Recommend(ctx, *request)
+	return &resp
+}
+
 func main() {
 	fmt.Println(runtime.GOMAXPROCS(8))
 	http.HandleFunc("/heartbeat", heartbeat)
@@ -63,6 +68,7 @@ func main() {
 	http.HandleFunc("/add_to_cart", wrappers.Wrapper[boutique.AddToCartRequest, boutique.AddToCartResponse](addToCart))
 	http.HandleFunc("/ro_view_cart", wrappers.Wrapper[boutique.ViewCartRequest, boutique.ViewCartResponse](viewCart))
 	http.HandleFunc("/checkout", wrappers.Wrapper[boutique.CheckoutRequest, boutique.CheckoutResponse](checkout))
+	http.HandleFunc("/ro_recommend", wrappers.Wrapper[boutique.GetRecommendationsRequest, boutique.GetRecommendationsResponse](recommend))
 	fmt.Println("Server started on :3000")
 	listener, err := net.Listen("tcp", ":3000")
 	if err != nil {
