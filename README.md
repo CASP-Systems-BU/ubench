@@ -19,3 +19,20 @@ Our contributions on top of upstream:
 ## Running on CloudLab
 
 See [scripts/cloudlab/README.md](scripts/cloudlab/README.md) for how to instantiate a cluster, bootstrap it, and deploy/run a workload.
+
+## Agentic workload
+
+Boutique's `recommendations` service can run as an **LLM agent** instead of a
+static stub: a bounded tool-calling loop whose downstream calls (productcatalog,
+cart, currency) are chosen at run time, giving content-dependent, variable
+fan-out and optional real external LLM egress. A deterministic `stub` backend is
+the default (free, reproducible, full-rate); an OpenAI-compatible `llm` backend
+produces real egress at low rate.
+
+```bash
+# stub backend — dense agentic fan-out, no cost:
+./scripts/cloudlab/deploy.sh --experiment experiments/boutique-agentic.yaml --run
+```
+
+Full reference (backends, env, driver, LLM setup, image rebuild, telemetry):
+[docs/AGENTIC.md](docs/AGENTIC.md).
