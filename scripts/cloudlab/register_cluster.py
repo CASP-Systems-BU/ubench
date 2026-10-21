@@ -14,6 +14,15 @@ Rewrites, next to this script:
 
 Options: --user (default: existing nodes_user), --ip-base 10.0.0.101,
 --home (default /users/<user>), --check (ssh-probe every host first).
+
+Kafka brokers (Hubble flow sink, see kafka.sh) are extra nodes of the same
+experiment that do NOT join k8s:
+
+    python3 register_cluster.py <k8s hosts...> --kafka <h1> <h2> <h3>
+
+They land in nodes.sh as KAFKA_NODES and in config.json as kafka_nodes, with
+internal IPs continuing after the last k8s node (--kafka-ip-base to override).
+Without --kafka the existing kafka_* entries are preserved.
 """
 from __future__ import annotations
 
@@ -36,6 +45,17 @@ def bump_ip(base: str, i: int) -> str:
     return ".".join(parts[:3] + [str(last)])
 
 
+def existing_kafka_hosts() -> list[str]:
+    """KAFKA_NODES hostnames from the current nodes.sh (empty if absent)."""
+    path = SCRIPT_DIR / "nodes.sh"
+    if not path.exists():
+        return []
+    out = subprocess.run(
+        ["bash", "-c", 'source "$1"; printf "%s\\n" "${KAFKA_NODES[@]}"', "_", str(path)],
+        capture_output=True, text=True).stdout
+    return [h for h in out.splitlines() if h]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("hosts", nargs="+",
@@ -46,6 +66,11 @@ def main() -> None:
     ap.add_argument("--home", help="home dir on the nodes (default /users/<user>)")
     ap.add_argument("--check", action="store_true",
                     help="ssh-probe every host before writing anything")
+    ap.add_argument("--kafka", nargs="+", metavar="HOST",
+                    help="public hostnames of the Kafka broker nodes (not k8s members)")
+    ap.add_argument("--kafka-ip-base",
+                    help="internal IP of the first Kafka node (default: next IP "
+                         "after the last k8s node)")
     args = ap.parse_args()
 
     cfg_path = SCRIPT_DIR / "config.json"
@@ -54,13 +79,27 @@ def main() -> None:
         with open(cfg_path) as f:
             old = json.load(f)
 
-    user = args.user or old.get("nodes_user") or "yuhang"
+    user = args.user or old.get("nodes_user") or "WillG"
     home = args.home or f"/users/{user}"
     ips = [bump_ip(args.ip_base, i) for i in range(len(args.hosts))]
 
+    # Kafka nodes: new --kafka list, else keep what the existing files have.
+    if args.kafka:
+        kafka_hosts = args.kafka
+        kafka_base = args.kafka_ip_base or bump_ip(args.ip_base, len(args.hosts))
+        kafka_ips = [bump_ip(kafka_base, i) for i in range(len(kafka_hosts))]
+        overlap = set(kafka_ips) & set(ips)
+        if overlap:
+            sys.exit(f"[register_cluster] kafka IPs overlap k8s IPs: {sorted(overlap)}")
+    else:
+        kafka_ips = old.get("kafka_nodes", [])
+        kafka_hosts = existing_kafka_hosts()
+        if len(kafka_hosts) != len(kafka_ips):
+            kafka_hosts, kafka_ips = [], []
+
     if args.check:
         bad = []
-        for host in args.hosts:
+        for host in args.hosts + (args.kafka or []):
             rc = subprocess.run(
                 ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                  "-o", "StrictHostKeyChecking=accept-new",
@@ -85,6 +124,12 @@ def main() -> None:
         role = "  (control-plane)" if i == 0 else ""
         lines.append(f'\t"{host}"   # node-{i} / {ip}{role}')
     lines.append(")")
+    if kafka_hosts:
+        lines.append("# Kafka brokers (Hubble flow sink; not k8s members) — see kafka.sh.")
+        lines.append("KAFKA_NODES=(")
+        for i, (host, ip) in enumerate(zip(kafka_hosts, kafka_ips)):
+            lines.append(f'\t"{host}"   # kafka-{i} / {ip}')
+        lines.append(")")
     (SCRIPT_DIR / "nodes.sh").write_text("\n".join(lines) + "\n")
 
     cfg = {
@@ -95,6 +140,9 @@ def main() -> None:
         "enable_istio_metrics": old.get("enable_istio_metrics", True),
         "enable_audit_log": old.get("enable_audit_log", True),
     }
+    if kafka_ips:
+        cfg["kafka_nodes"] = kafka_ips
+        cfg["kafka_topic"] = old.get("kafka_topic", "hubble-flows")
     with open(cfg_path, "w") as f:
         json.dump(cfg, f, indent=4)
         f.write("\n")
@@ -105,6 +153,8 @@ def main() -> None:
     for i, (host, ip) in enumerate(zip(args.hosts, ips)):
         print(f"  node-{i}  {ip:<12}  {host}"
               + ("  <- control plane" if i == 0 else ""))
+    for i, (host, ip) in enumerate(zip(kafka_hosts, kafka_ips)):
+        print(f"  kafka-{i} {ip:<12}  {host}")
     if workers < 1:
         print("[register_cluster] WARN: no workers — you need at least 2 nodes")
     print("Next: ./bootstrap.sh  (then deploy.sh; experiments can use up to "

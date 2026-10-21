@@ -5,9 +5,15 @@
 # CloudLab experiments instead of editing by hand. node-0 is first and
 # lines up with the internal-IP order in config.json (10.0.0.101 == node-0).
 NODES=(
-	"apt120.apt.emulab.net"   # node-0 / 10.0.0.101  (control-plane)
-	"apt104.apt.emulab.net"   # node-1 / 10.0.0.102
-	"apt096.apt.emulab.net"   # node-2 / 10.0.0.103
-	"apt118.apt.emulab.net"   # node-3 / 10.0.0.104
-	"apt106.apt.emulab.net"   # node-4 / 10.0.0.105
+	"pc427.emulab.net"   # node-0 / 10.0.0.101  (control-plane)
+	"pc528.emulab.net"   # node-1 / 10.0.0.102
+	"pc429.emulab.net"   # node-2 / 10.0.0.103
+	"pc446.emulab.net"   # node-3 / 10.0.0.104
+	"pc519.emulab.net"   # node-4 / 10.0.0.105
+)
+# Kafka brokers (Hubble flow sink; not k8s members) — see kafka.sh.
+KAFKA_NODES=(
+	"pc517.emulab.net"   # kafka-0 / 10.0.0.106
+	"pc506.emulab.net"   # kafka-1 / 10.0.0.107
+	"pc426.emulab.net"   # kafka-2 / 10.0.0.108
 )

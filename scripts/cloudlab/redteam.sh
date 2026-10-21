@@ -60,7 +60,7 @@ SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20)
 
 CFG_USER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["nodes_user"])' \
 	"${SCRIPT_DIR}/config.json" 2>/dev/null || true)"
-SSH_USER="${SSH_USER:-${CFG_USER:-yuhang}}"
+SSH_USER="${SSH_USER:-${CFG_USER:-WillG}}"
 source "${SCRIPT_DIR}/nodes.sh"
 MAIN="${CONTROL_HOST:-${NODES[0]:-}}"
 [ -z "${MAIN}" ] && { echo "[!] no control node; set CONTROL_HOST" >&2; exit 1; }

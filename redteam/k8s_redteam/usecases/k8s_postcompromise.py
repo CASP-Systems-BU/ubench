@@ -9,7 +9,7 @@ post-compromise attack trace to label and detect.
 Run via the `redteam-agent` console script or `python -m k8s_redteam.run_agent`:
 
     redteam-agent K8sPostCompromise --pod <pod> --node0 <control-host> \
-        --node0_user yuhang --namespace redteam
+        --node0_user WillG --namespace redteam
 
 LLM/limits come from the .env (OpenRouter by default); see redteam/.env.example.
 """
@@ -37,7 +37,7 @@ class K8sPostCompromiseAgent(ChatAgent):
         desc="control-node host that can `kubectl exec` into the pod (e.g. apt097.apt.emulab.net)",
         default="",
     )
-    node0_user: str = parameter(desc="ssh user on the control node", default="yuhang")
+    node0_user: str = parameter(desc="ssh user on the control node", default="WillG")
     namespace: str = parameter(desc="namespace of the compromised pod", default="redteam")
     container: str = parameter(desc="container name inside the pod", default="agent")
     cmd_timeout: int = parameter(desc="per-command timeout in seconds", default=60)
