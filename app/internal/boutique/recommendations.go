@@ -2,23 +2,9 @@ package boutique
 
 import (
 	"context"
-	"github.com/atlas/slowpoke/pkg/invoke"
-	"math/rand"
-	"fmt"
-	"net/http"
 )
 
-const (
-	debug_recommendations = false
-)
-
-func min(a int, b int) int {
-	if a > b {
-		return b
-	}
-	return a
-}
-
+// contains reports whether e is in s. Shared with agent.go (same package).
 func contains(s []string, e string) bool {
 	for _, a := range s {
 		if a == e {
@@ -28,28 +14,19 @@ func contains(s []string, e string) bool {
 	return false
 }
 
+// GetRecommendations returns recommended product IDs for the given seed
+// products using the configured agent backend (stub by default). Kept as the
+// plain product-id entry point for backward compatibility.
 func GetRecommendations(ctx context.Context, productIds []string) []string {
-	if debug_recommendations { fmt.Println("GetRecommendations: ", productIds) }
-	_productIds := make([]string, 0)
-	req1 := FetchCatalogRequest{}
-	catalog := invoke.Invoke[FetchCatalogResponse](ctx, "productcatalog", "ro_fetch_catalog", req1, http.Request{})
-	for _, x := range catalog.Catalog {
-		_productIds = append(_productIds, x.Id)
-	}
-	filteredProducts := make([]string, 0, len(_productIds)-len(productIds))
-	for _, id := range _productIds {
-		if contains(productIds, id) == false {
-			filteredProducts = append(filteredProducts, id)
-		}
-	}
-	numProducts := len(filteredProducts)
-	numReturn := min(5, numProducts)
-	// sample list of indices to return
-	indices := rand.Perm(numProducts)[:numReturn]
-	// fetch product ids from indices
-	prodList := make([]string, numReturn)
-	for i, idx := range indices {
-		prodList[i] = filteredProducts[idx]
-	}
-	return prodList
+	return agentFor().Recommend(ctx, RecommendInput{ProductIds: productIds}, "")
+}
+
+// GetRecommendationsFor runs the agent with the full request, honoring the
+// optional per-request Mode override and user context (user id / query).
+func GetRecommendationsFor(ctx context.Context, req GetRecommendationsRequest) []string {
+	return agentFor().Recommend(ctx, RecommendInput{
+		ProductIds: req.ProductIds,
+		UserId:     req.UserId,
+		Query:      req.Query,
+	}, req.Mode)
 }

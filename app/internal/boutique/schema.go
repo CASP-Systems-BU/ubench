@@ -159,6 +159,10 @@ type FetchCatalogResponse struct {
 
 type GetRecommendationsRequest struct {
 	ProductIds []string `json:"product_ids"`
+	// Optional agentic controls (all default to empty -> env-configured behavior).
+	Mode   string `json:"mode,omitempty"`    // "", "stub", or "llm" (per-request override)
+	UserId string `json:"user_id,omitempty"` // enables the get_cart tool / enriches the prompt
+	Query  string `json:"query,omitempty"`   // free-text user interest for the prompt
 }
 
 type GetRecommendationsResponse struct {
