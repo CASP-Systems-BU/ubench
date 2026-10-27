@@ -235,3 +235,57 @@ cilium hubble port-forward &
 hubble observe --follow                       # live flow stream
 hubble observe --verdict DROPPED              # just denied traffic
 ```
+
+## 7. Streaming Hubble flows to Kafka (optional)
+
+During `deploy.sh --run`, the Hubble flow stream can also be sent to a 3-broker
+Kafka cluster, where a streaming system can consume it live. The ubench nodes
+just hand the flows off. The local `cilium/flows.jsonl` capture and all
+post-processing stay the same; Kafka is an additional sink.
+
+**Nodes.** Instantiate the experiment with **3 extra nodes** on the same
+`10.0.0.x` LAN (e.g. 5 k8s + 3 Kafka = 8). The Kafka nodes do not join k8s.
+Register them after the k8s hosts:
+
+```bash
+python3 register_cluster.py <node-0> ... <node-4> --kafka <kafka-0> <kafka-1> <kafka-2>
+./bootstrap.sh            # or `./bootstrap.sh secure` on a live cluster: ufw + sshd on the Kafka nodes too
+./kafka.sh up             # brokers + topic + node-0 wiring + smoke test (idempotent)
+```
+
+The Kafka nodes get internal IPs that continue after the last k8s node
+(`10.0.0.106-108` here; override with `--kafka-ip-base`). The existing
+`10.0.0.0/24` ufw rule already allows broker traffic (9092 clients, 9093 KRaft
+controllers), so no ports are opened publicly.
+
+`kafka.sh up`:
+- starts native Kafka 3.9 (KRaft, combined broker+controller) on each Kafka node
+  as the systemd unit `ubench-kafka`. It uses
+  [kafka/deployKafkaNode.sh](kafka/deployKafkaNode.sh), vendored from
+  disaggregated-streaming.
+- creates the `hubble-flows` topic (3 partitions, RF=3, min ISR 2, 24h /
+  2 GiB-per-partition retention; broker data lives on the root disk under
+  `/tmp`).
+- installs `kcat` on node-0 and writes `~/ubench/kafka.env`.
+
+`run_and_collect.sh` sources `~/ubench/kafka.env` on every `--run` and
+forwards each `hubble observe -o jsonpb` line, i.e. one `{"flow":{...}}` JSON
+object, as one unkeyed Kafka message. `meta.json` records `kafka_enabled` /
+`kafka_topic`, and producer errors land in `cilium/_kafka.err`. If Kafka is down,
+the run still completes normally.
+
+```bash
+./kafka.sh status   # unit state, registered brokers, topic layout, node-0 wiring
+./kafka.sh down     # stop brokers (data kept; `up` resumes)
+./kafka.sh wipe     # stop + delete data + remove kafka.env (runs stop streaming)
+```
+
+Consumers connect from inside the LAN with
+`bootstrap.servers=10.0.0.106:9092,10.0.0.107:9092,10.0.0.108:9092`, e.g. on a
+Kafka node:
+`~/ubench-kafka/kafka_2.13-3.9.0/bin/kafka-console-consumer.sh --bootstrap-server 10.0.0.106:9092 --topic hubble-flows`.
+
+> **Known bottleneck**: all flows still pass through a single
+> `hubble observe -f` (via the relay) and one producer on node-0. That is fine
+> at current rates, but higher throughput will need per-node Hubble exporters
+> producing directly to Kafka.

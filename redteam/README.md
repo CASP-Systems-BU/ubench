@@ -26,8 +26,8 @@ To run it by hand against an already-deployed launchpad pod:
 
 ```bash
 redteam-agent K8sPostCompromise \
-    --pod "$(ssh yuhang@apt097.apt.emulab.net kubectl get pod -n redteam -l app=redteam-agent -o jsonpath='{.items[0].metadata.name}')" \
-    --node0 apt097.apt.emulab.net --node0_user yuhang --namespace redteam
+    --pod "$(ssh WillG@apt097.apt.emulab.net kubectl get pod -n redteam -l app=redteam-agent -o jsonpath='{.items[0].metadata.name}')" \
+    --node0 apt097.apt.emulab.net --node0_user WillG --namespace redteam
 ```
 
 The run transcript (every tool call + LLM message, with timestamps and cost) is written to

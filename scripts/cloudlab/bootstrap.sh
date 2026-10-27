@@ -2,7 +2,7 @@
 #
 # Orchestrate the whole CloudLab k8s cluster setup *from your local machine*.
 #
-# Run this from wherever you normally `ssh yuhang@apt141.apt.emulab.net` from
+# Run this from wherever you normally `ssh WillG@apt141.apt.emulab.net` from
 # (your laptop / dev box). It will, over the *public* CloudLab hostnames:
 #
 #   kube      1. copy scripts/cloudlab/ up to the main node (node-0)
@@ -22,7 +22,7 @@
 #                                 (alias: `firewall`)
 #
 # Prereqs on the machine you run this from:
-#   * `ssh yuhang@apt141.apt.emulab.net` already works (key in your ssh-agent)
+#   * `ssh WillG@apt141.apt.emulab.net` already works (key in your ssh-agent)
 #   * that key is what authenticates to all the CloudLab nodes (it is, by
 #     default) — `ssh -A` forwards it so node-0 can reach the workers.
 #
@@ -34,7 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # (register_cluster.py writes it); SSH_USER env overrides.
 CFG_USER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["nodes_user"])' \
 	"${SCRIPT_DIR}/config.json" 2>/dev/null || true)"
-USER="${SSH_USER:-${CFG_USER:-yuhang}}"
+USER="${SSH_USER:-${CFG_USER:-WillG}}"
 
 # Public CloudLab hostnames live in nodes.sh (node-0 first = control plane).
 source "${SCRIPT_DIR}/nodes.sh"
@@ -103,9 +103,11 @@ else
 fi
 EOF
 )
+	# Kafka brokers (KAFKA_NODES, if registered) get the same rules: the
+	# 10.0.0.0/24 allow already covers broker (9092) + controller (9093) traffic.
 	echo "[*] Applying firewall + SSH hardening on all nodes..."
 	local rc=0
-	for host in "${NODES[@]}"; do
+	for host in "${NODES[@]}" ${KAFKA_NODES[@]+"${KAFKA_NODES[@]}"}; do
 		echo "=== secure @ ${host} ==="
 		if ! ssh "${SSH_OPTS[@]}" "${USER}@${host}" "bash -s" <<<"$fw"; then
 			echo "[!] secure step FAILED on ${host}" >&2

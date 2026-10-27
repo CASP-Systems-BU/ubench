@@ -13,6 +13,8 @@
 #   * collect_metrics.py for the segment window (Istio time-series, call graph,
 #     Envoy access logs, audit slice — all already window-filtered)
 #   * meta.json (params + window + segment index + rate offered/achieved)
+#   * optionally, the live Hubble stream forwarded to Kafka (~/ubench/kafka.env,
+#     written by cloudlab/kafka.sh)
 #
 # Segments exist because the log sources rotate with hard caps (kubelet
 # ~10Mi x 5 per container, apiserver 4 x 100M audit backups): harvesting every
@@ -108,10 +110,49 @@ if [[ "${CILIUM_ON}" == true ]]; then
 	HUBBLE_OBS_PID=$!
 fi
 
+# Kafka sink (optional): forward the same Hubble stream to the Kafka cluster
+# set up by scripts/cloudlab/kafka.sh, which writes ~/ubench/kafka.env on this
+# node. One Hubble jsonpb line = one Kafka message (unkeyed, spread over the
+# topic's partitions). A follower re-reads flows.jsonl rather than tee-ing
+# hubble's stdout, so a slow or dead producer can never block or SIGPIPE the
+# file capture — flows.jsonl is identical with or without Kafka.
+KAFKA_ON=false
+KAFKA_PIPE_PID=""
+KAFKA_TAIL_PIDFILE="${EXP_DIR}/_kafka_tail.pid"
+if [[ "${CILIUM_ON}" == true ]]; then
+	_brokers="${KAFKA_BROKERS:-}" _topic="${KAFKA_TOPIC:-}"
+	# shellcheck disable=SC1091
+	[ -f "${HOME}/ubench/kafka.env" ] && source "${HOME}/ubench/kafka.env"
+	KAFKA_BROKERS="${_brokers:-${KAFKA_BROKERS:-}}"
+	KAFKA_TOPIC="${_topic:-${KAFKA_TOPIC:-hubble-flows}}"
+	KCAT="$(command -v kcat || command -v kafkacat || true)"
+	if [[ -n "${KAFKA_BROKERS}" && -n "${KCAT}" ]]; then
+		{ tail -n +1 -F "${EXP_DIR}/flows.jsonl" 2>/dev/null &
+		  echo $! > "${KAFKA_TAIL_PIDFILE}"; wait 2>/dev/null; } \
+			| "${KCAT}" -P -b "${KAFKA_BROKERS}" -t "${KAFKA_TOPIC}" \
+				-X compression.codec=lz4 -X linger.ms=20 -X acks=all \
+				2>"${EXP_DIR}/_kafka.err" &
+		KAFKA_PIPE_PID=$!
+		KAFKA_ON=true
+		echo "[run_and_collect] streaming Hubble flows to Kafka ${KAFKA_BROKERS} topic ${KAFKA_TOPIC}"
+	elif [[ -n "${KAFKA_BROKERS}" ]]; then
+		echo "[run_and_collect] WARN: KAFKA_BROKERS set but kcat/kafkacat not installed; not streaming to Kafka"
+	fi
+fi
+
 cleanup_streams() {
 	kill "${SAMPLER}" 2>/dev/null; wait "${SAMPLER}" 2>/dev/null
 	[ -n "${HUBBLE_OBS_PID}" ] && { kill "${HUBBLE_OBS_PID}" 2>/dev/null; wait "${HUBBLE_OBS_PID}" 2>/dev/null; }
 	[ -n "${HUBBLE_PF_PID}" ]  && { kill "${HUBBLE_PF_PID}"  2>/dev/null; wait "${HUBBLE_PF_PID}"  2>/dev/null; }
+	if [ -n "${KAFKA_PIPE_PID}" ]; then
+		# Let the follower drain the file tail, then EOF kcat so it flushes;
+		# bound the flush so unreachable brokers can't hang teardown.
+		sleep 2
+		[ -s "${KAFKA_TAIL_PIDFILE}" ] && kill "$(cat "${KAFKA_TAIL_PIDFILE}")" 2>/dev/null
+		for _ in $(seq 1 60); do kill -0 "${KAFKA_PIPE_PID}" 2>/dev/null || break; sleep 1; done
+		kill "${KAFKA_PIPE_PID}" 2>/dev/null; wait "${KAFKA_PIPE_PID}" 2>/dev/null
+		KAFKA_PIPE_PID=""
+	fi
 }
 
 client_pod() { kubectl get pod 2>/dev/null | grep ubuntu-client- | cut -f 1 -d " "; }
@@ -163,7 +204,8 @@ PYEOF
 write_meta() {
 	local dir="$1" seg_idx="$2" seg_start="$3" seg_end="$4" \
 	      seg_start_iso="$5" seg_end_iso="$6" seg_id="$7" status="$8"
-	local exp_json="null" workers_json="null"
+	local exp_json="null" workers_json="null" kafka_topic_json="null"
+	[[ "${KAFKA_ON}" == true ]] && kafka_topic_json="\"${KAFKA_TOPIC}\""
 	[ -n "${EXPERIMENT}" ] && exp_json="\"${EXPERIMENT}\""
 	[ -n "${WORKERS}" ] && workers_json="${WORKERS}"
 	cat > "${dir}/meta.json" <<JSON
@@ -180,6 +222,8 @@ write_meta() {
   "end_iso": "${seg_end_iso}",
   "istio_enabled": ${ISTIO_ON},
   "cilium_enabled": ${CILIUM_ON},
+  "kafka_enabled": ${KAFKA_ON},
+  "kafka_topic": ${kafka_topic_json},
   "audit_enabled": ${AUDIT_ON},
   "run_status": ${status},
   "generator": "wrk2",
@@ -275,6 +319,8 @@ for (( seg=1; seg<=NSEG; seg++ )); do
 		"${EXP_DIR}/resources.csv" > "${DIR}/resources.csv"
 	[[ "${CILIUM_ON}" == true && -s "${EXP_DIR}/_capture.err" ]] \
 		&& cp "${EXP_DIR}/_capture.err" "${DIR}/cilium/_capture.err"
+	[[ "${KAFKA_ON}" == true && -s "${EXP_DIR}/_kafka.err" ]] \
+		&& cp "${EXP_DIR}/_kafka.err" "${DIR}/cilium/_kafka.err"
 
 	# Istio metrics + access logs + audit slice for this window (all
 	# window-filtered inside collect_metrics.py; self-skips absent sources).

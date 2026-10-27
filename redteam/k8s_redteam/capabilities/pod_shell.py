@@ -23,7 +23,7 @@ from hackingBuddyGPT.capability import Capability
 class PodShellCapability(Capability):
     pod: str
     node0: str
-    node0_user: str = "yuhang"
+    node0_user: str = ""
     namespace: str = "redteam"
     container: str = "agent"
     timeout: int = 60

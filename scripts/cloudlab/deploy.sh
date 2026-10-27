@@ -23,7 +23,7 @@
 #
 #   Env overrides (precedence: built-in default < spec file < env var):
 #     CONTROL_HOST=apt190.apt.emulab.net   # control node (default: 1st in nodes.sh)
-#     SSH_USER=yuhang                      # ssh user (default: config.json nodes_user)
+#     SSH_USER=WillG                      # ssh user (default: config.json nodes_user)
 #     REQUEST=mix THREADS=4 CONNS=16       # load shape
 #     RATE=1000                            # wrk2 -R, total offered req/s
 #     TOTAL_S=3600 SEGMENT_S=600           # continuous load; one run dir per segment
@@ -70,7 +70,7 @@ SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20)
 # (register_cluster.py writes it); SSH_USER env still overrides.
 CFG_USER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["nodes_user"])' \
 	"${SCRIPT_DIR}/config.json" 2>/dev/null || true)"
-SSH_USER="${SSH_USER:-${CFG_USER:-yuhang}}"
+SSH_USER="${SSH_USER:-${CFG_USER:-WillG}}"
 
 # Control node: the first hostname in nodes.sh (the shared node list, node-0).
 # Override with CONTROL_HOST if you need to target a different node.
