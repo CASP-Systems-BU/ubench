@@ -1,0 +1,22 @@
+# Agentic boutique (external LLM backend). A deliberately LOW-rate run that
+# produces REAL external LLM egress telemetry (a recommendations -> ext:world
+# flow per sampled call). wrk2 is open-loop and every recommend can hit the
+# model, so keep the rate tiny.
+#
+# Before deploying this spec, flip the recommendations Deployment to the LLM
+# backend (env on k8s/boutique/yamls/recommendations.yaml):
+#   AGENT_MODE=llm, AGENT_LLM_BASE_URL, AGENT_LLM_MODEL, AGENT_SAMPLE (e.g. 0.3)
+# and create the api-key Secret (see k8s/boutique/recommendations-llm-secret.example.yaml
+# and docs/AGENTIC.md). This spec only shapes the load.
+name: boutique-agentic-llm
+benchmark: boutique
+request: agentic
+workers: 4
+replicas:
+  default: 1
+load:
+  threads: 2
+  conns: 8
+  rate: 10
+total_duration_s: 600
+segment_s: 600
