@@ -5,8 +5,10 @@
 #
 # Run this from the SAME machine you run bootstrap.sh from (your laptop / dev
 # box). It renders the benchmark manifests for the requested experiment
-# (scripts/render_manifests.py -> build/<name>/), copies them up to the control
-# node (node-0), applies them there, waits for rollout, and heartbeat-sweeps
+# (scripts/render_manifests.py -> build/<name>/), builds the app image from
+# your local app/ tree on the control node (node-0) and loads it onto the
+# workers (skipped when that exact tree is already loaded), copies the
+# manifests up, applies them there, waits for rollout, and heartbeat-sweeps
 # the services. With --down it deletes the currently deployed workload instead.
 #
 # The cluster must already be up (./bootstrap.sh). Cluster size is whatever you
@@ -128,6 +130,78 @@ RATE="${RATE:-${SPEC_RATE}}"
 TOTAL_S="${TOTAL_S:-${DURATION:-${SPEC_TOTAL_S}}}"
 SEGMENT_S="${SEGMENT_S:-${SPEC_SEGMENT_S}}"
 CLIENT_IMAGE="${CLIENT_IMAGE:-}"
+
+# --- app image: build the local source tree, load it onto the workers ---------
+# The renderer pointed the app containers at SPEC_APP_IMAGE =
+# ubench.local/<bench>:<hash of the local app/ + PrebuiltDockerfile> with
+# imagePullPolicy: Never (instead of the upstream Docker Hub image, which never
+# sees our app/ changes). Any worker missing that tag gets it here: the source
+# is shipped to the control node, built there by its docker (native amd64,
+# layer cache kept between deploys), and streamed into each worker's containerd
+# k8s.io namespace — the store kubelet reads — over the 10.0.0.x LAN. An
+# unchanged tree that's already loaded skips all of it. This runs before the
+# manifests are copied, so a failed build leaves the deployed workload as-is.
+# Empty for benches with no PrebuiltDockerfile image (chain-*).
+if [[ -n "${SPEC_APP_IMAGE}" ]]; then
+	echo "[*] App image ${SPEC_APP_IMAGE}: checking which workers have it"
+	# ssh -A: the control node reaches the workers with your forwarded key.
+	MISSING="$(ssh -A "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" "bash -s" "${SPEC_APP_IMAGE}" <<'EOF'
+set -e
+REF="$1"
+WORKER_IPS="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' \
+	-o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}')"
+[ -n "${WORKER_IPS}" ] || { echo "[!] no worker nodes found" >&2; exit 1; }
+for ip in ${WORKER_IPS}; do
+	# -n: this script is bash's stdin; ssh must not swallow the rest of it.
+	ssh -n -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes "${ip}" \
+		"sudo ctr -n k8s.io images ls -q | grep -qxF '${REF}'" || echo "${ip}"
+done
+EOF
+)"
+	if [[ -z "${MISSING}" ]]; then
+		echo "[*] Already loaded on every worker; skipping the build"
+	else
+		# Fresh dir every time: a file deleted locally must not linger in the
+		# build context, or the image would no longer match its content tag.
+		# The path list matches APP_BUILD_INPUTS in render_manifests.py.
+		echo "[*] Shipping the app source to ${MAIN} and building there"
+		tar -C "${REPO_ROOT}" -czf - app scripts/PrebuiltDockerfile \
+			| ssh "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" \
+				"rm -rf ~/ubench/image-src && mkdir -p ~/ubench/image-src && tar -xzf - -C ~/ubench/image-src"
+		# MISSING unquoted on purpose: one argument per worker IP.
+		ssh -A "${SSH_OPTS[@]}" "${SSH_USER}@${MAIN}" "bash -s" "${SPEC_APP_IMAGE}" "${BENCH}" ${MISSING} <<'EOF'
+set -eo pipefail
+REF="$1"
+BENCH="$2"
+shift 2
+REPO="${REF%:*}"
+cd "${HOME}/ubench/image-src"
+if [ -z "$(sudo docker images -q "${REF}")" ]; then
+	sudo docker build --build-arg BENCHMARK="${BENCH}" -f scripts/PrebuiltDockerfile -t "${REF}" .
+fi
+# Superseded builds of this bench: drop them so the control node's disk
+# doesn't fill (best-effort; the workers do the same after their import).
+sudo docker images --format '{{.Repository}}:{{.Tag}}' "${REPO}" \
+	| grep -vxF "${REF}" | xargs -r sudo docker rmi >/dev/null || true
+
+load() {
+	sudo docker save "${REF}" | ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes "$1" \
+		"sudo ctr -n k8s.io images import - && { sudo ctr -n k8s.io images ls -q | grep '^${REPO}:' \
+		 | grep -vxF '${REF}' | xargs -r sudo ctr -n k8s.io images rm >/dev/null || true; }"
+}
+pids=()
+for ip in "$@"; do
+	echo "[*] Loading ${REF} into containerd on ${ip}"
+	( load "${ip}" 2>&1 | sed "s/^/      [${ip}] /" ) &
+	pids+=("$!")
+done
+rc=0
+for p in "${pids[@]}"; do wait "${p}" || rc=1; done
+[ "${rc}" -eq 0 ] || echo "[!] loading the app image failed on at least one worker" >&2
+exit "${rc}"
+EOF
+	fi
+fi
 
 # Copy the rendered manifests up to the control node, staged: if a previous
 # render of this benchmark is deployed and its yamls differ (e.g. a service

@@ -104,19 +104,13 @@ allow (and an Istio `ServiceEntry` under `REGISTRY_ONLY`) for the model host.
 
 ## Rebuilding the image
 
-The boutique app image is built **manually** (not CI, unlike the client image).
-`PrebuiltDockerfile` rebuilds every `app/cmd/boutique/*` binary, so the changed
-recommendations + frontend are included automatically:
-
-```bash
-docker build --build-arg BENCHMARK=boutique -f scripts/PrebuiltDockerfile . -t <registry>/ubench:boutique
-docker push <registry>/ubench:boutique
-```
-
-The tag is mutable. This feature's first deploy changes `recommendations.yaml`,
-so `deploy.sh`'s drift path recreates the pods and they pull the new image. A
-*later* same-tag rebuild with unchanged YAML won't auto-roll — use a dated
-immutable tag, or `kubectl rollout restart deployment -l ubench.io/bench=boutique`.
+There's no manual step on CloudLab. `deploy.sh` builds the boutique image from
+your local `app/` tree on node-0 and loads it onto the workers. `PrebuiltDockerfile`
+rebuilds every `app/cmd/boutique/*` binary, so changes to recommendations,
+frontend, or anything they import are included. The image tag is a hash of the
+source, so any edit gets a new tag and the Deployments roll automatically. See
+"The app image is built from your working tree" in
+[scripts/cloudlab/README.md](../scripts/cloudlab/README.md).
 
 ## What the detector sees
 

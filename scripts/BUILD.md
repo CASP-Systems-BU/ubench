@@ -42,8 +42,11 @@ defaults).
 
 ## Build the application with poker runtime
 
-Run the following command from the repo root with `BENCHMARK=<name>` where
-name is one of `boutique`, `social`, `hotel`, and `movie`:
+On CloudLab you don't run this yourself: `scripts/cloudlab/deploy.sh` builds
+the image from your local `app/` tree on the control node and loads it onto the
+workers on every deploy (see [cloudlab/README.md](cloudlab/README.md)). To build
+it by hand, run this from the repo root with `BENCHMARK=<name>`, where name is
+one of `boutique`, `social`, `hotel`, or `movie`:
 
 ```
 docker build --build-arg BENCHMARK=boutique -f scripts/PrebuiltDockerfile . -t yizhengx/ubench:boutique

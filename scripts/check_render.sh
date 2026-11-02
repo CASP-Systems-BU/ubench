@@ -6,6 +6,7 @@
 #   * golden check: rendering every benchmark at workers=4 / replicas=1 must
 #     reproduce the checked-in placement exactly (proves the default path is
 #     a no-op, boutique via its pinned layout)
+#   * no rendered container still references the upstream Docker Hub app image
 #   * structural checks across workers x replica cases: per-replica Deployments
 #     carry the slot label in selector+template, selectors are disjoint, node
 #     pinning follows the round-robin formula, no ${...} placeholders survive
@@ -92,6 +93,9 @@ for bench in BENCHES:
     text = "".join(p.read_text() for p in (build / "yamls").glob("*.yaml"))
     if "${" in text:
         bad(f"{bench}: unsubstituted placeholder survives in build output")
+    if f"yizhengx/ubench:{bench}" in text:
+        bad(f"{bench}: upstream app image survives in build output "
+            "(the deploy would run Docker Hub's code, not app/)")
 
 # --- structural: workers x replica cases -------------------------------------
 for bench in BENCHES:

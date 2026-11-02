@@ -54,10 +54,29 @@ firewall + SSH hardening (`secure`).
 ```
 
 Renders the workload's manifests for the experiment (`render_manifests.py` —
-worker count, per-service replicas, chain-* processing times), copies the
-rendered `build/<name>/` to the control node, applies it, waits for rollout,
-and runs a heartbeat sweep to confirm the deploy is live. See
+worker count, per-service replicas, chain-* processing times), builds the app
+image from your local source (below), copies the rendered `build/<name>/` to
+the control node, applies it, waits for rollout, and runs a heartbeat sweep to
+confirm the deploy is live. See
 [experiments/README.md](../../experiments/README.md) for the spec schema.
+
+> **The app image is built from your working tree on every deploy.** The
+> checked-in manifests name the upstream Docker Hub image
+> (`yizhengx/ubench:<bench>`), which doesn't include our `app/` changes. The
+> renderer swaps it for `ubench.local/<bench>:<hash>`, where the hash covers
+> `app/` + `scripts/PrebuiltDockerfile` (uncommitted edits included), with
+> `imagePullPolicy: Never`. If any worker lacks that tag, `deploy.sh` tars the
+> source up to node-0, runs `docker build` there, and streams the image into
+> each worker's containerd over the LAN. You don't need Docker locally.
+> - Unchanged source: the build is skipped.
+> - Changed source: new tag, so the Deployments roll on their own.
+> - The first build on a fresh cluster takes a few minutes. After that, the
+>   `go mod download` layer is cached and only the compile step reruns.
+> - Superseded builds of the same benchmark are pruned on every node.
+> - The tag is recorded as `app_image` in each run's `experiment.json`.
+> - `chain-*` (`yizhengx/mesh:synthetic`) and movie's `user`
+>   (`yizhengx/mucache`) aren't built from this repo and still pull from
+>   Docker Hub.
 
 Flags:
 

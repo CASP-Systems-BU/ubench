@@ -25,11 +25,19 @@ the m Deployments never select each other's pods.
 chain-* ConfigMaps carry ${PROCESSING_TIME_SERVICEi} placeholders; they are
 substituted here (values from gen_processing_time.py, seeded by the spec) so the
 build output is fully concrete and `kubectl apply -f` works without envsubst.
+
+App image: the checked-in yamls reference the upstream Docker Hub image
+yizhengx/ubench:<bench>, which is built from upstream's code, not ours. Every
+container using it is switched to ubench.local/<bench>:<content hash of the
+local build inputs> with imagePullPolicy: Never, so a deploy runs exactly the
+local app/ tree (uncommitted edits included). deploy.sh builds that tag on the
+control node and loads it onto the workers (SPEC_APP_IMAGE in spec.env).
 """
 from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 import re
@@ -50,6 +58,11 @@ BUILD_DIR = REPO_ROOT / "build"
 SLOT_LABEL = "ubench.io/replica-slot"
 NODE_INDEX_LABEL = "ubench.io/node-index"
 BENCH_LABEL = "ubench.io/bench"
+UPSTREAM_APP_IMAGE = "yizhengx/ubench:{bench}"
+LOCAL_APP_REPO = "ubench.local"
+# Everything scripts/PrebuiltDockerfile COPYs, plus the Dockerfile itself.
+# deploy.sh ships exactly these paths to the control node as the build context.
+APP_BUILD_INPUTS = ("app", "scripts/PrebuiltDockerfile")
 
 SPEC_DEFAULTS = {
     "request": None,          # falls back to bench.yaml default_request
@@ -190,6 +203,40 @@ def stamp_ownership(doc: dict, bench: str) -> None:
             .setdefault("labels", {})[BENCH_LABEL] = bench
 
 
+def app_source_digest() -> str:
+    """sha256 over every APP_BUILD_INPUTS file's repo-relative path and bytes,
+    in sorted order. Same tree -> same tag (deploy.sh skips the build); any
+    edit, committed or not -> a new tag, and the Deployments roll."""
+    files = []
+    for rel in APP_BUILD_INPUTS:
+        p = REPO_ROOT / rel
+        if p.is_dir():
+            files.extend(f for f in p.rglob("*") if f.is_file())
+        else:
+            files.append(p)
+    h = hashlib.sha256()
+    for f in sorted(files):
+        data = f.read_bytes()
+        h.update(f"{f.relative_to(REPO_ROOT)}\0{len(data)}\0".encode())
+        h.update(data)
+    return h.hexdigest()[:12]
+
+
+def pod_containers(doc: dict) -> list[dict]:
+    pod = doc["spec"]["template"]["spec"]
+    return pod.get("initContainers", []) + pod.get("containers", [])
+
+
+def localize_app_image(doc: dict, upstream: str, local: str) -> None:
+    """Point the Deployment's upstream app containers at the locally built
+    image. Never (not IfNotPresent): a node that missed the load fails loudly
+    with ErrImageNeverPull instead of falling back to a registry."""
+    for c in pod_containers(doc):
+        if c.get("image") == upstream:
+            c["image"] = local
+            c["imagePullPolicy"] = "Never"
+
+
 def deployment_names(docs: list) -> list[str]:
     return [d["metadata"]["name"] for d in docs
             if isinstance(d, dict) and d.get("kind") == "Deployment"]
@@ -276,12 +323,23 @@ def render(resolved: dict, bench_meta: dict, out_dir: Path) -> dict:
             "run off node-1, so part of the client->ingress traffic goes "
             "cross-node (deterministically).")
 
+    upstream_image = UPSTREAM_APP_IMAGE.format(bench=resolved["benchmark"])
+    app_image = None
+    if any(c.get("image") == upstream_image
+           for _, docs in parsed for doc in docs
+           if isinstance(doc, dict) and doc.get("kind") == "Deployment"
+           for c in pod_containers(doc)):
+        app_image = (f"{LOCAL_APP_REPO}/{resolved['benchmark']}:"
+                     f"{app_source_digest()}")
+
     replica_map = {}
     for path, docs in parsed:
         out_docs = []
         for doc in docs:
             if isinstance(doc, dict) and doc.get("kind") == "Deployment":
                 name = doc["metadata"]["name"]
+                if app_image:
+                    localize_app_image(doc, upstream_image, app_image)
                 m = resolved["replicas_overrides"].get(
                     name, resolved["replicas_default"])
                 replica_map[name] = m
@@ -302,6 +360,7 @@ def render(resolved: dict, bench_meta: dict, out_dir: Path) -> dict:
         "placement": placement,          # service -> home node-index
         "replicas": replica_map,         # service -> replica count
         "pinned_layout_used": bool(pinned),
+        "app_image": app_image,          # None: bench has no PrebuiltDockerfile image
         "warnings": warnings,
     }
     with open(out_dir / "resolved.json", "w") as f:
@@ -319,6 +378,7 @@ def render(resolved: dict, bench_meta: dict, out_dir: Path) -> dict:
         "SPEC_TOTAL_S": resolved["total_duration_s"],
         "SPEC_SEGMENT_S": resolved["segment_s"],
         "SPEC_SEED": resolved["seed"],
+        "SPEC_APP_IMAGE": app_image or "",
     }
     with open(out_dir / "spec.env", "w") as f:
         for k, v in env_lines.items():
