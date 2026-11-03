@@ -1,0 +1,6 @@
+# pip deps for flow_resolver.py, installed into a venv on each Kafka broker
+# VM by ../kafka.sh (they are NOT k8s cluster members, so no in-cluster
+# client libraries or credentials are available by default — see
+# ../provision_resolver_rbac.sh for how read access is granted instead).
+confluent-kafka>=2.5,<3
+kubernetes>=31,<32

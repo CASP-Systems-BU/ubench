@@ -4,9 +4,14 @@
 # The optional arguments let local runs use the same deployment without SSH.
 #
 # Vendored from CASP-Systems-BU/disaggregated-streaming
-# (scripts/kafka/deployKafkaNode.sh). ubench change: replication defaults are
-# sized to the broker count (capped at 3, min ISR = RF-1) so a 3-node cluster
-# survives a broker loss; upstream inherits the template's RF=1.
+# (scripts/kafka/deployKafkaNode.sh). ubench changes:
+#   * replication defaults are sized to the broker count (capped at 3, min ISR
+#     = RF-1) so a 3-node cluster survives a broker loss; upstream inherits
+#     the template's RF=1.
+#   * an EXTERNAL listener (PUBLIC_HOST:9094) for access from outside the
+#     CloudLab experiment LAN — unauthenticated, same trust model as the
+#     internal listener; ../grant_external_access.sh is what actually opens
+#     the firewall to a given IP.
 # Started by ../kafka.sh as the transient systemd unit `ubench-kafka`.
 set -euo pipefail
 
@@ -14,10 +19,12 @@ KAFKA_VERSION="3.9.0"
 KAFKA_PKG="kafka_2.13-${KAFKA_VERSION}.tgz"
 KAFKA_DIR="$PWD/kafka_2.13-${KAFKA_VERSION}"
 KAFKA_DOWNLOAD_URL="https://archive.apache.org/dist/kafka/${KAFKA_VERSION}/${KAFKA_PKG}"
-BROKER_IPS=${1:?Usage: deployKafkaNode.sh broker-ips [this-node-ip] [isolated-run-directory]}
+BROKER_IPS=${1:?Usage: deployKafkaNode.sh broker-ips [this-node-ip] [isolated-run-directory] [public-host]}
 BROKER_IPS=$(printf '%s' "$BROKER_IPS" | tr -d ' ')
 CURRENT_IP=${2:-}
 RUN_DIR=${3:-}
+PUBLIC_HOST=${4:-}
+EXTERNAL_PORT=9094
 
 # Legacy callers may omit this argument; the cluster launcher supplies its IP.
 if [ -z "$CURRENT_IP" ]; then
@@ -83,12 +90,19 @@ fi
 # active values portably (BSD and GNU awk); append keys absent in the template.
 awk -v node="$NODE_ID" -v voters="$VOTERS" -v host="$CURRENT_IP" \
     -v partitions="${#IPS[@]}" -v data="$KAFKA_DATA_DIR" \
-    -v replicas="$REPLICAS" -v minisr="$MIN_ISR" '
+    -v replicas="$REPLICAS" -v minisr="$MIN_ISR" \
+    -v public_host="$PUBLIC_HOST" -v ext_port="$EXTERNAL_PORT" '
 BEGIN {
   values["node.id"]=node
   values["controller.quorum.voters"]=voters
-  values["listeners"]="PLAINTEXT://" host ":9092,CONTROLLER://" host ":9093"
-  values["advertised.listeners"]="PLAINTEXT://" host ":9092"
+  if (public_host != "") {
+    values["listeners"]="PLAINTEXT://" host ":9092,CONTROLLER://" host ":9093,EXTERNAL://0.0.0.0:" ext_port
+    values["advertised.listeners"]="PLAINTEXT://" host ":9092,EXTERNAL://" public_host ":" ext_port
+    values["listener.security.protocol.map"]="PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT"
+  } else {
+    values["listeners"]="PLAINTEXT://" host ":9092,CONTROLLER://" host ":9093"
+    values["advertised.listeners"]="PLAINTEXT://" host ":9092"
+  }
   values["num.partitions"]=partitions
   values["log.dirs"]=data
   values["auto.create.topics.enable"]="true"

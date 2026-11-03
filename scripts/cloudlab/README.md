@@ -265,8 +265,10 @@ controllers), so no ports are opened publicly.
   disaggregated-streaming.
 - creates the `hubble-flows` topic (3 partitions, RF=3, min ISR 2, 24h /
   2 GiB-per-partition retention; broker data lives on the root disk under
-  `/tmp`).
+  `/tmp`), plus `hubble-flows-resolved` and `hubble-entities` (see below).
 - installs `kcat` on node-0 and writes `~/ubench/kafka.env`.
+- provisions a read-only kubeconfig for the resolver (below) and starts it on
+  every Kafka node.
 
 `run_and_collect.sh` sources `~/ubench/kafka.env` on every `--run` and
 forwards each `hubble observe -o jsonpb` line, i.e. one `{"flow":{...}}` JSON
@@ -289,3 +291,54 @@ Kafka node:
 > `hubble observe -f` (via the relay) and one producer on node-0. That is fine
 > at current rates, but higher throughput will need per-node Hubble exporters
 > producing directly to Kafka.
+
+### Resolved output: `hubble-flows-resolved` / `hubble-entities`
+
+`hubble-flows` carries raw, unresolved Hubble flows — nothing parses or
+resolves pod/service identities before they land in Kafka. Each Kafka node
+also runs a small consumer, `ubench-flow-resolver`
+([kafka/flow_resolver.py](kafka/flow_resolver.py)), that reads `hubble-flows`,
+resolves IPs/pod names to canonical entity IDs and applies the same L4/DNS
+selection rule gnnid's offline `ingest` uses, and republishes the result —
+so `hubble-flows-resolved` mirrors gnnid's `events.parquet` output, just
+continuously instead of after the fact. `hubble-entities` (compacted, keyed
+by `entity_id`) carries the resolver's current pod/service/node table,
+republished whenever its snapshot is (re)built.
+
+The parse/resolve logic itself is vendored from gnnid
+(`kafka/flowlib/`, copied from `gnnid/src/gnnid/{schema,resolve,
+ingest/hubble}.py` — see that directory's docstring for why it's a vendored
+copy rather than a `gnnid` dependency). The resolver's k8s snapshot comes from
+a live API call rather than a point-in-time `kubectl` dump, since there's no
+"end of run" on a continuous stream — see `provision_resolver_rbac.sh` for how
+a Kafka node (not a k8s member, so no kubelet credentials or in-cluster
+ServiceAccount of its own) gets read-only API access, and
+`flow_resolver.py --refresh-interval-s` for the (default-off) periodic re-poll
+that catches pod churn. Topology is assumed mostly static for now; a
+watch/informer-based resolver is a natural follow-up if churn turns out to
+matter.
+
+```bash
+RESOLVER_REFRESH_INTERVAL_S=1800 ./kafka.sh up   # re-poll every 30 min instead of once
+```
+
+### External access
+
+Each Kafka node also gets an EXTERNAL listener (port 9094), advertised via
+its public CloudLab hostname instead of its internal `10.0.0.x` address —
+that's what makes it reachable from outside the experiment LAN at all (an
+internal-only advertised address is unroutable externally even if the
+firewall allows the port). It's unauthenticated, same trust model as the
+internal listener: once an IP can reach it, it has full read/write access,
+same as anything on the internal LAN.
+
+By default nothing outside the experiment can reach it — `ufw` only allows
+the usual fixed set of IPs plus the internal `10.0.0.0/24`. To let a new
+external pipeline (e.g. somewhere separate running inference) talk to Kafka:
+
+```bash
+./kafka/grant_external_access.sh <ip>   # opens port 9094 to that IP on every Kafka node
+```
+
+Then point it at `host:9094,...` for each Kafka node (printed by the script)
+as `bootstrap.servers`.
